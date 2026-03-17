@@ -1,0 +1,15 @@
+{
+  "projects": {
+    "default": "free-deft-work"
+  },
+  "targets": {
+    "free-deft-work": {
+      "hosting": {
+        "like-deft-work": [
+          "like-deft-work"
+        ]
+      }
+    }
+  },
+  "etags": {}
+}
