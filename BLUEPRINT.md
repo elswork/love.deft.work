@@ -1,4 +1,4 @@
-# Blueprint: like.deft.work // El Nexo de Descubrimiento Universal
+# love.deft.work // El Nexo de Descubrimiento Universal
 
 Este documento constituye la "Piedra Angular" técnica y filosófica de **like.deft.work**, la cámara de descubrimientos premium de la Nación Digital Anticitera.
 

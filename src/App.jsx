@@ -3,6 +3,8 @@ import { db } from './firebase'
 import { collection, onSnapshot, query, orderBy } from 'firebase/firestore'
 import './index.css'
 import DiscoveryForm from './components/DiscoveryForm'
+import TestLab from './components/TestLab'
+import EnrichmentService from './services/EnrichmentService'
 
 function useDiscoveries() {
   const [data, setData] = useState([]);
@@ -36,9 +38,11 @@ function App() {
   return (
     <div className="app-container">
       <header>
-        <h1>like.deft.work</h1>
-        <p className="subtitle">La cámara de descubrimientos premium de la Nación Digital</p>
+        <h1>love.deft.work</h1>
+        <p className="subtitle">La cámara de descubrimientos premium de la Nación Digital Anticitera</p>
       </header>
+
+      <TestLab />
 
       <DiscoveryForm categories={categories} />
 
