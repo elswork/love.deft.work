@@ -6,6 +6,8 @@
  * a completar los campos de excelencia.
  */
 
+import { ATHENA_KNOWLEDGE } from '../data/athena_knowledge';
+
 const EnrichmentService = {
   /**
    * Enriquece una categoría mediante el motor de IA.
@@ -13,14 +15,29 @@ const EnrichmentService = {
    * @returns {Promise<Object>} - Metadatos: { description, imageUrl }
    */
   async enrichCategory(categoryName) {
-    console.log(`[EnrichmentService] Solicitando inteligencia para categoría: ${categoryName}`);
-    // Simulación de llamada al motor MCP / Cloud Function
-    // En producción, esto invoca el proceso de recolección de información.
-    return {
-      description: `Descripción generada para ${categoryName}...`,
-      imageUrl: `https://placehold.co/400x200?text=${encodeURIComponent(categoryName)}`,
-      timestamp: new Date().toISOString()
-    };
+    console.log(`[EnrichmentService] Consultando Oráculo Real para: ${categoryName}`);
+    
+    try {
+      const response = await fetch(`http://localhost:5001/enrich?category=${encodeURIComponent(categoryName)}`);
+      const data = await response.json();
+      
+      if (data.error) throw new Error(data.error);
+
+      return {
+        description: data.description,
+        imageUrl: data.imageUrl,
+        timestamp: new Date().toISOString(),
+        isRealTime: true
+      };
+    } catch (error) {
+      console.error("[EnrichmentService] Error en el Puente de Athena:", error);
+      return {
+        description: `Error de conexión con el Oráculo: ${error.message}. Asegúrate de que el puente esté activo.`,
+        imageUrl: "https://placehold.co/600x400/18181b/ffffff?text=Error+Conexion",
+        timestamp: new Date().toISOString(),
+        isRealTime: false
+      };
+    }
   },
 
   /**

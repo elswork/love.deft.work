@@ -53,10 +53,27 @@ const TestLab = () => {
           </button>
         </div>
         {humanResult && (
-          <div className="mt-4 p-4 bg-blue-900/20 rounded-lg animate-in fade-in slide-in-from-top-4 duration-500">
-            <p className="text-sm font-bold text-blue-300">Respuesta de Athena Intelligence:</p>
-            <p className="italic text-slate-300">"{humanResult.description}"</p>
-            <img src={humanResult.imageUrl} alt="Sugerencia" className="mt-2 rounded-md border border-blue-500/20 w-32" />
+          <div className="mt-6 p-6 bg-slate-900/40 rounded-2xl border border-blue-500/20 backdrop-blur-md animate-in zoom-in-95 duration-500">
+            <div className="flex flex-col md:flex-row gap-6 items-center">
+              <div className="flex-1">
+                <p className="text-xs font-bold text-blue-400 uppercase tracking-widest mb-2 font-mono">
+                  {humanResult.isElite ? "✨ Athena Real Intelligence" : "📡 Escaneo en Proceso"}
+                </p>
+                <p className="text-lg text-slate-100 leading-relaxed italic">
+                  "{humanResult.description}"
+                </p>
+                <p className="mt-4 text-[10px] text-slate-500 font-mono">
+                  Sello Temporal: {new Date(humanResult.timestamp).toLocaleString()}
+                </p>
+              </div>
+              <div className="w-full md:w-64 shrink-0">
+                <img 
+                  src={humanResult.imageUrl} 
+                  alt="Sugerencia Visual" 
+                  className="rounded-xl border border-blue-500/30 shadow-2xl shadow-blue-500/10 w-full object-cover aspect-video"
+                />
+              </div>
+            </div>
           </div>
         )}
       </div>
