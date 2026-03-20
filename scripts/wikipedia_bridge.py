@@ -13,6 +13,10 @@ def enrich():
 
     print(f"[WikipediaBridge] Consultando Wikipedia para: {category}")
     
+    headers = {
+        'User-Agent': 'AnticiteraProject/1.0 (https://anticitera.deft.work; contact@deft.work)'
+    }
+    
     # Intentar obtener el extracto e info de Wikipedia (en español primero)
     wiki_url = "https://es.wikipedia.org/w/api.php"
     params = {
@@ -26,7 +30,7 @@ def enrich():
     }
     
     try:
-        response = requests.get(wiki_url, params=params)
+        response = requests.get(wiki_url, params=params, headers=headers)
         data = response.json()
         
         pages = data.get("query", {}).get("pages", {})
@@ -36,7 +40,7 @@ def enrich():
         if "missing" in page:
             # Reintentar con la primera letra en mayúscula si falló
             params["titles"] = category.capitalize()
-            response = requests.get(wiki_url, params=params)
+            response = requests.get(wiki_url, params=params, headers=headers)
             data = response.json()
             pages = data.get("query", {}).get("pages", {})
             page_id = next(iter(pages))
@@ -45,7 +49,7 @@ def enrich():
         if "missing" in page:
             # Fallback a inglés si no hay en español
             wiki_url_en = "https://en.wikipedia.org/w/api.php"
-            response = requests.get(wiki_url_en, params=params)
+            response = requests.get(wiki_url_en, params=params, headers=headers)
             data = response.json()
             pages = data.get("query", {}).get("pages", {})
             page_id = next(iter(pages))

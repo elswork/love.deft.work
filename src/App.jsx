@@ -12,14 +12,21 @@ function useDiscoveries() {
 
   useEffect(() => {
     const q = query(collection(db, "discoveries"), orderBy("createdAt", "desc"));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const discoveriesData = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      }));
-      setData(discoveriesData);
-      setLoading(false);
-    });
+    const unsubscribe = onSnapshot(q, 
+      (snapshot) => {
+        const discoveriesData = snapshot.docs.map(doc => ({
+          id: doc.id,
+          ...doc.data()
+        }));
+        setData(discoveriesData);
+        setLoading(false);
+      },
+      (error) => {
+        console.error("[Firestore] Error de acceso:", error);
+        setLoading(false);
+        setData([{ id: 'err', name: 'Error de Seguridad', category: 'Sistema', description: 'El Nexo requiere permisos de lectura. Revisa las reglas de Firestore o inicia sesión.' }]);
+      }
+    );
     return () => unsubscribe();
   }, []);
 

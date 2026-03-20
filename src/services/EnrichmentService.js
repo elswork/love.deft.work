@@ -25,8 +25,8 @@ const EnrichmentService = {
 
       return {
         description: data.description,
-        // Usamos el keyword de Wikipedia para garantizar una imagen relevante en Unsplash
-        imageUrl: `https://images.unsplash.com/photo-1?${encodeURIComponent(data.imageKeyword)}&auto=format&fit=crop&w=800&q=80`,
+        // Usamos LoremFlickr como alternativa estable para búsqueda por palabra clave
+        imageUrl: `https://loremflickr.com/800/600/${encodeURIComponent(data.imageKeyword)}`,
         categories: data.categories,
         timestamp: new Date().toISOString(),
         isRealTime: true,
