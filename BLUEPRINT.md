@@ -1,9 +1,9 @@
 # love.deft.work // El Nexo de Descubrimiento Universal
 
-Este documento constituye la "Piedra Angular" técnica y filosófica de **like.deft.work**, la cámara de descubrimientos premium de la Nación Digital Anticitera.
+Este documento constituye la "Piedra Angular" técnica y filosófica de **love.deft.work**, la cámara de descubrimientos premium de la Nación Digital Anticitera.
 
 ## 1. Visión y Propósito
-`like.deft.work` no es un simple repositorio de enlaces; es una **arquitectura de filtrado de la excelencia**. Su objetivo es capturar, categorizar y presentar descubrimientos en áreas de alta intensidad (Pasiones), proporcionando una interfaz de navegación fluida para el conocimiento y la belleza.
+`love.deft.work` no es un simple repositorio de enlaces; es una **arquitectura de filtrado de la excelencia**. Su objetivo es capturar, categorizar y presentar descubrimientos en áreas de alta intensidad (Pasiones), proporcionando una interfaz de navegación fluida para el conocimiento y la belleza.
 
 - **Mantra**: "Si es excelente, pertenece al Nexo."
 - **Nivel de Abstracción**: Universal (Cualquier objeto, lugar o concepto puede ser un descubrimiento).
