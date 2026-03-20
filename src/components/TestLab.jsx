@@ -57,7 +57,7 @@ const TestLab = () => {
             <div className="flex flex-col md:flex-row gap-6 items-center">
               <div className="flex-1">
                 <p className="text-xs font-bold text-blue-400 uppercase tracking-widest mb-2 font-mono">
-                  {humanResult.isElite ? "✨ Athena Real Intelligence" : "📡 Escaneo en Proceso"}
+                  {humanResult.source === "Wikipedia" ? "📚 Wikipedia Lexicon" : "📡 Escaneo en Proceso"}
                 </p>
                 <p className="text-lg text-slate-100 leading-relaxed italic">
                   "{humanResult.description}"

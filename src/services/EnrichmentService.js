@@ -15,7 +15,7 @@ const EnrichmentService = {
    * @returns {Promise<Object>} - Metadatos: { description, imageUrl }
    */
   async enrichCategory(categoryName) {
-    console.log(`[EnrichmentService] Consultando Oráculo Real para: ${categoryName}`);
+    console.log(`[EnrichmentService] Consultando Lexicón Wikipedia para: ${categoryName}`);
     
     try {
       const response = await fetch(`http://localhost:5001/enrich?category=${encodeURIComponent(categoryName)}`);
@@ -25,14 +25,17 @@ const EnrichmentService = {
 
       return {
         description: data.description,
-        imageUrl: data.imageUrl,
+        // Usamos el keyword de Wikipedia para garantizar una imagen relevante en Unsplash
+        imageUrl: `https://images.unsplash.com/photo-1?${encodeURIComponent(data.imageKeyword)}&auto=format&fit=crop&w=800&q=80`,
+        categories: data.categories,
         timestamp: new Date().toISOString(),
-        isRealTime: true
+        isRealTime: true,
+        source: data.source
       };
     } catch (error) {
-      console.error("[EnrichmentService] Error en el Puente de Athena:", error);
+      console.error("[EnrichmentService] Error en el Puente Wikipedia:", error);
       return {
-        description: `Error de conexión con el Oráculo: ${error.message}. Asegúrate de que el puente esté activo.`,
+        description: `Error de conexión con el Lexicón: ${error.message}. Asegúrate de que el puente esté activo.`,
         imageUrl: "https://placehold.co/600x400/18181b/ffffff?text=Error+Conexion",
         timestamp: new Date().toISOString(),
         isRealTime: false
