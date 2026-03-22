@@ -3,7 +3,7 @@ import { db } from './firebase'
 import { collection, onSnapshot, query, orderBy, deleteDoc, doc } from 'firebase/firestore'
 import './index.css'
 import DiscoveryForm from './components/DiscoveryForm'
-import EnrichmentService from './services/EnrichmentService'
+import { AuthProvider, useAuth } from './context/AuthContext'
 
 function useDiscoveries() {
   const [data, setData] = useState([]);
@@ -32,8 +32,9 @@ function useDiscoveries() {
   return { data, loading };
 }
 
-function App() {
+function LoveApp() {
   const { data: discoveries, loading } = useDiscoveries();
+  const { user, loginWithGoogle, logout } = useAuth();
   const [filter, setFilter] = useState('All');
 
   const categories = ['All', ...new Set(discoveries.map(item => item.category))];
@@ -42,13 +43,15 @@ function App() {
     : discoveries.filter(d => d.category === filter);
 
   const handleDelete = async (id) => {
-    console.log("[Nexo] Intento de borrado para ID:", id);
-    alert("Iniciando protocolo de borrado para: " + id);
+    if (!user) {
+      alert("Solo los ciudadanos autenticados pueden realizar purgas en el Nexo.");
+      return;
+    }
+    
     if (window.confirm('¿Confirmas la purga de este elemento del Nexo?')) {
       try {
         await deleteDoc(doc(db, "discoveries", id));
         console.log("[Nexo] Purga completada en Firestore");
-        alert("Elemento eliminado satisfactoriamente.");
       } catch (error) {
         console.error("[Firestore] Error crítico al borrar:", error);
         alert("Error de comunicación con el Nexo: " + error.message);
@@ -59,11 +62,38 @@ function App() {
   return (
     <div className="app-container">
       <header>
-        <h1>love.deft.work</h1>
-        <p className="subtitle">La cámara de descubrimientos premium de la Nación Digital Anticitera</p>
+        <div className="header-top">
+          <div className="brand">
+            <h1>love.deft.work</h1>
+            <p className="subtitle">Cámara de Descubrimientos Premium</p>
+          </div>
+          <div className="auth-section">
+            {user ? (
+              <div className="user-profile">
+                <img src={user.photoURL} alt={user.displayName} className="user-avatar" />
+                <div className="user-info">
+                  <span className="user-name">{user.displayName}</span>
+                  <span className="user-rank">{user.rank || 'Ciudadano'}</span>
+                </div>
+                <button onClick={logout} className="btn-auth-logout">Salir</button>
+              </div>
+            ) : (
+              <button onClick={loginWithGoogle} className="btn-auth-login">
+                <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" alt="Google" />
+                Acceder al Nexo
+              </button>
+            )}
+          </div>
+        </div>
       </header>
 
-      <DiscoveryForm categories={categories} />
+      {user ? (
+        <DiscoveryForm categories={categories} />
+      ) : (
+        <div className="auth-placeholder">
+          <p>Debes identificarte como ciudadano para aportar nuevos descubrimientos al Nexo.</p>
+        </div>
+      )}
 
       <div className="category-filter">
         {categories.map(cat => (
@@ -79,7 +109,7 @@ function App() {
 
       <main>
         {loading ? (
-          <div style={{textAlign: 'center', padding: '4rem', color: 'var(--primary)'}}>Iniciando sincronización con el Nexo...</div>
+          <div style={{textAlign: 'center', padding: '4rem', color: 'var(--primary)'}}>Sincronizando con el Nexo...</div>
         ) : (
           <div className="discovery-grid">
             {filteredDiscoveries.map(item => {
@@ -92,16 +122,18 @@ function App() {
                       <span className="status-dot"></span>
                       {item.status === 'completed' ? 'Validado' : item.status === 'pending' ? 'Pendiente' : 'Manual'}
                     </div>
-                    <button 
-                      className="btn-card-delete" 
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleDelete(item.id);
-                      }}
-                      title="Borrar del Nexo"
-                    >
-                      &times;
-                    </button>
+                    {user && (
+                      <button 
+                        className="btn-card-delete" 
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleDelete(item.id);
+                        }}
+                        title="Borrar del Nexo"
+                      >
+                        &times;
+                      </button>
+                    )}
                   </div>
                   <span className="category-badge">{item.category}</span>
                   
@@ -145,6 +177,14 @@ function App() {
       </footer>
     </div>
   )
+}
+
+function App() {
+  return (
+    <AuthProvider>
+      <LoveApp />
+    </AuthProvider>
+  );
 }
 
 export default App

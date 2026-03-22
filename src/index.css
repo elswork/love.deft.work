@@ -33,9 +33,22 @@ body {
 }
 
 header {
-  text-align: center;
   margin-bottom: 4rem;
   animation: fadeInDown 1s ease-out;
+}
+
+.header-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 1rem 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.brand {
+  text-align: left;
 }
 
 h1 {
@@ -572,4 +585,112 @@ h1 {
   0% { opacity: 0.6; }
   50% { opacity: 1; }
   100% { opacity: 0.6; }
+}
+.auth-section {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+}
+
+.btn-auth-login {
+  background: white;
+  color: #1f2937;
+  border: 1px solid #d1d5db;
+  padding: 0.6rem 1.2rem;
+  border-radius: 8px;
+  font-weight: 600;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  transition: all 0.2s;
+  font-size: 0.9rem;
+}
+
+.btn-auth-login img {
+  width: 18px;
+  height: 18px;
+}
+
+.btn-auth-login:hover {
+  background: #f9fafb;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+}
+
+.user-profile {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: rgba(255, 255, 255, 0.05);
+  padding: 0.5rem 1rem;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+}
+
+.user-avatar {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 2px solid var(--primary);
+}
+
+.user-info {
+  display: flex;
+  flex-direction: column;
+  text-align: left;
+}
+
+.user-name {
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: white;
+  line-height: 1.2;
+}
+
+.user-rank {
+  font-size: 0.7rem;
+  color: var(--primary);
+  text-transform: uppercase;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+}
+
+.btn-auth-logout {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  padding: 0.4rem 0.8rem;
+  border-radius: 6px;
+  font-size: 0.75rem;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.btn-auth-logout:hover {
+  background: rgba(239, 68, 68, 0.1);
+  color: #ef4444;
+  border-color: rgba(239, 68, 68, 0.3);
+}
+
+.auth-placeholder {
+  max-width: 800px;
+  margin: 0 auto 4rem;
+  background: linear-gradient(135deg, rgba(16, 185, 129, 0.05), rgba(99, 102, 241, 0.05));
+  border: 1px solid var(--border);
+  padding: 2rem;
+  border-radius: 20px;
+  text-align: center;
+  color: var(--text-muted);
+  font-style: italic;
+  backdrop-filter: blur(8px);
+}
+
+@media (max-width: 768px) {
+  .header-top {
+    flex-direction: column;
+    gap: 1.5rem;
+    text-align: center;
+  }
+  .brand { text-align: center; }
+  h1 { font-size: 2.5rem; }
 }
