@@ -47,7 +47,7 @@ Todo cambio en el Nexo debe pasar por el **Filtro de Calidad**:
 - [x] **Fase II**: Sincronización Real (Hook `useDiscoveries`).
 - [x] **Fase III**: Polimorfismo UI (Colores por pasión y metadatos).
 - [ ] **Fase IV**: Inserción de Datos (Interfaz para ciudadanos y agentes).
-- [ ] **Fase V**: Búsqueda Semántica y Recomendación (IA).
+- [ ] **Fase V**: Búsqueda Semántica y Recomendación mediante inferencia IA (Gemma). *(Ver [Estrategia de Taxonomía](docs/Taxonomy_Strategy.md))*
 
 ---
 **Estado del Documento**: Versión 1.0.0 (Propuesta)
