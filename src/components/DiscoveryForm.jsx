@@ -87,6 +87,7 @@ export default function DiscoveryForm({ categories }) {
                     subcategory: enrichedData.subcategory,
                     description: enrichedData.description,
                     status: enrichedData.status,
+                    relevance_score: enrichedData.relevance_score || 70,
                     metadata: enrichedData.metadata,
                     image: enrichedData.image
                   })}>
@@ -132,6 +133,18 @@ export default function DiscoveryForm({ categories }) {
               </div>
             </div>
             <div className="input-group" style={{marginTop: '1rem'}}>
+              <label>Relevancia de Pasión (1-100)</label>
+              <input 
+                type="range"
+                min="1"
+                max="100"
+                className="smart-range"
+                value={manualData.relevance_score || 50}
+                onChange={e => setManualData({...manualData, relevance_score: parseInt(e.target.value)})}
+              />
+              <span className="range-value">{manualData.relevance_score || 50} / 100</span>
+            </div>
+            <div className="input-group" style={{marginTop: '1rem'}}>
               <label>Descripción de Excelencia</label>
               <textarea 
                 className="smart-input" 
@@ -147,6 +160,7 @@ export default function DiscoveryForm({ categories }) {
                 subcategory: manualData.subcategory,
                 description: manualData.description,
                 status: 'manual',
+                relevance_score: manualData.relevance_score || 50,
                 metadata: { url: discoveryInput, inputMode: 'manual' },
                 image: 'https://images.unsplash.com/photo-1620641788421-7a1c342ea42e?q=80&w=1974&auto=format&fit=crop' // Placeholder premium dark
               })}>
