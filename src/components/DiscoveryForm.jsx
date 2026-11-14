@@ -1,7 +1,8 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { db } from '../firebase';
 import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
 import EnrichmentService from '../services/EnrichmentService';
+import AttachmentService from '../services/AttachmentService';
 import { KEEP_COLORS, getColorConfig, getCategoryIcon } from '../data/keep_palette';
 
 /**
@@ -28,7 +29,47 @@ export default function DiscoveryForm({
   const [pinned, setPinned] = useState(false);
   const [isPublic, setIsPublic] = useState(true);
   const [colorKey, setColorKey] = useState('');
+  const [selectedFile, setSelectedFile] = useState(null);
+  const [filePreviewUrl, setFilePreviewUrl] = useState('');
+  const [uploadProgress, setUploadProgress] = useState(null);
+  const [fileError, setFileError] = useState('');
   const [saving, setSaving] = useState(false);
+  const fileInputRef = useRef(null);
+
+  useEffect(() => {
+    return () => {
+      if (filePreviewUrl) URL.revokeObjectURL(filePreviewUrl);
+    };
+  }, [filePreviewUrl]);
+
+  const handleSelectFile = (file) => {
+    setFileError('');
+    if (!file) return;
+    if (file.size > AttachmentService.MAX_ATTACHMENT_BYTES) {
+      setFileError('El fichero supera el máximo de 15 MB.');
+      return;
+    }
+    if (filePreviewUrl) URL.revokeObjectURL(filePreviewUrl);
+    setSelectedFile(file);
+    if (file.type && file.type.startsWith('image/')) {
+      setFilePreviewUrl(URL.createObjectURL(file));
+    } else {
+      setFilePreviewUrl('');
+    }
+    if (!rawInput.trim()) {
+      setRawInput(AttachmentService.cleanFileTitle(file.name));
+    }
+    setExpanded(true);
+  };
+
+  const clearSelectedFile = () => {
+    if (filePreviewUrl) URL.revokeObjectURL(filePreviewUrl);
+    setSelectedFile(null);
+    setFilePreviewUrl('');
+    setFileError('');
+    setUploadProgress(null);
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
 
   // Inferencia en vivo mientras escribe
   const parsed = useMemo(
@@ -79,23 +120,44 @@ export default function DiscoveryForm({
     setPinned(false);
     setIsPublic(true);
     setColorKey('');
+    clearSelectedFile();
     setExpanded(false);
   };
 
   const handleSubmit = async (e) => {
     if (e) e.preventDefault();
-    if (!rawInput.trim() || saving) return;
+    if ((!rawInput.trim() && !selectedFile) || saving) return;
 
     try {
       setSaving(true);
+      setFileError('');
+
+      let attachment = null;
+      if (selectedFile) {
+        setUploadProgress(0);
+        attachment = await AttachmentService.uploadAttachment(
+          selectedFile,
+          user?.uid,
+          (pct) => setUploadProgress(pct)
+        );
+      }
+
+      const effectiveText = rawInput.trim() || AttachmentService.cleanFileTitle(selectedFile?.name);
+      const effectiveParsed = rawInput.trim()
+        ? parsed
+        : EnrichmentService.parseQuickInput(effectiveText, allItems);
       const finalCategory = effectiveCategory.trim() || 'General';
       const payload = {
-        name: parsed.title,
-        title: parsed.title,
+        name: effectiveParsed.title,
+        title: effectiveParsed.title,
         type: effectiveType,
-        url: effectiveType === 'link' ? parsed.url || EnrichmentService.normalizeUrl(rawInput) : '',
-        domain: effectiveType === 'link' ? parsed.domain : '',
-        favicon: effectiveType === 'link' ? parsed.favicon : '',
+        url:
+          effectiveType === 'link'
+            ? effectiveParsed.url || EnrichmentService.normalizeUrl(effectiveText)
+            : '',
+        domain: effectiveType === 'link' ? effectiveParsed.domain : '',
+        favicon: effectiveType === 'link' ? effectiveParsed.favicon : '',
+        attachment,
         category: finalCategory,
         extraCategories: combinedExtraCategories,
         relatedIds: combinedRelatedIds,
@@ -120,8 +182,10 @@ export default function DiscoveryForm({
       resetForm();
     } catch (err) {
       console.error('[KeepCapture] Error al guardar:', err);
+      setFileError(err?.message || 'Error al guardar el elemento.');
     } finally {
       setSaving(false);
+      setUploadProgress(null);
     }
   };
 
@@ -152,7 +216,30 @@ export default function DiscoveryForm({
   }, [categories]);
 
   return (
-    <div className={`keep-capture-shell ${expanded ? 'is-expanded' : ''}`}>
+    <div
+      className={`keep-capture-shell ${expanded ? 'is-expanded' : ''}`}
+      onDragOver={(e) => {
+        if (e.dataTransfer?.types?.includes('Files')) {
+          e.preventDefault();
+          setExpanded(true);
+        }
+      }}
+      onDrop={(e) => {
+        if (e.dataTransfer?.files?.length) {
+          e.preventDefault();
+          handleSelectFile(e.dataTransfer.files[0]);
+        }
+      }}
+      onPaste={(e) => {
+        const fileItem = Array.from(e.clipboardData?.items || []).find(
+          (item) => item.kind === 'file'
+        );
+        if (fileItem) {
+          const f = fileItem.getAsFile();
+          if (f) handleSelectFile(f);
+        }
+      }}
+    >
       <form onSubmit={handleSubmit} className="keep-capture-form">
         <div className="keep-capture-main-row">
           <span className="keep-capture-type-indicator" title={`Tipo detectado: ${effectiveType}`}>
@@ -163,15 +250,29 @@ export default function DiscoveryForm({
             value={rawInput}
             onFocus={() => setExpanded(true)}
             onChange={(e) => setRawInput(e.target.value)}
-            placeholder="Añade un link, palabra o frase corta… (usa #Categoría o @elemento para conectar)"
+            placeholder="Añade un link, palabra, frase o adjunta un fichero… (#Categoría @elemento)"
             className="keep-capture-input"
-            aria-label="Añadir un link, palabra o frase corta"
+            aria-label="Añadir un link, palabra, frase corta o fichero"
           />
           {rawInput.trim() && (
             <span className="keep-auto-cat-pill" title="Categoría asignada automáticamente">
               {getCategoryIcon(effectiveCategory)} {effectiveCategory}
             </span>
           )}
+          <label
+            htmlFor="capture-file-input"
+            className={`keep-icon-btn keep-file-trigger ${selectedFile ? 'is-active' : ''}`}
+            title="Adjuntar un fichero (máx. 15 MB)"
+          >
+            📎
+            <input
+              ref={fileInputRef}
+              id="capture-file-input"
+              type="file"
+              className="keep-sr-only"
+              onChange={(e) => handleSelectFile(e.target.files?.[0])}
+            />
+          </label>
           <button
             type="button"
             className={`keep-icon-btn ${pinned ? 'is-active' : ''}`}
@@ -182,12 +283,59 @@ export default function DiscoveryForm({
           </button>
           <button
             type="submit"
-            disabled={!rawInput.trim() || saving}
+            disabled={(!rawInput.trim() && !selectedFile) || saving}
             className="keep-btn keep-btn-primary keep-capture-submit"
           >
             {saving ? 'Guardando…' : 'Guardar'}
           </button>
         </div>
+
+        {(selectedFile || fileError || uploadProgress !== null) && (
+          <div className="keep-file-preview-bar">
+            {selectedFile && (
+              <div className="keep-file-chip">
+                {filePreviewUrl ? (
+                  <img src={filePreviewUrl} alt="" className="keep-file-thumb" />
+                ) : (
+                  <span>
+                    {AttachmentService.getAttachmentIcon(selectedFile.type, selectedFile.name)}
+                  </span>
+                )}
+                <span className="keep-file-name">{selectedFile.name}</span>
+                <small className="keep-file-size">
+                  {AttachmentService.formatFileSize(selectedFile.size)}
+                </small>
+                {!saving && (
+                  <button
+                    type="button"
+                    className="keep-icon-btn-sm"
+                    onClick={clearSelectedFile}
+                    title="Quitar fichero"
+                    aria-label="Quitar fichero adjunto"
+                  >
+                    ✕
+                  </button>
+                )}
+              </div>
+            )}
+            {uploadProgress !== null && (
+              <div className="keep-upload-progress-row" role="status" aria-live="polite">
+                <progress
+                  className="keep-upload-progress"
+                  value={uploadProgress}
+                  max={100}
+                  aria-label="Progreso de subida del fichero"
+                />
+                <span>{uploadProgress}%</span>
+              </div>
+            )}
+            {fileError && (
+              <span className="keep-file-error" role="status" aria-live="polite">
+                {fileError}
+              </span>
+            )}
+          </div>
+        )}
 
         {expanded && (
           <div className="keep-capture-details">

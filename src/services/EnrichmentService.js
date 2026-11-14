@@ -215,6 +215,7 @@ export function normalizeDiscoveryDoc(raw) {
     clicks: typeof raw.clicks === 'number' ? raw.clicks : 0,
     relevance_score: typeof raw.relevance_score === 'number' ? raw.relevance_score : 75,
     colorKey: raw.colorKey || '',
+    attachment: raw.attachment || null,
     isPublic: raw.isPublic !== undefined ? Boolean(raw.isPublic) : true,
     sharedWith: Array.isArray(raw.sharedWith) ? raw.sharedWith : [],
     ownerUid: raw.ownerUid || '',

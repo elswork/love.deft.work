@@ -19,6 +19,7 @@ import LightDismissDialog from './components/LightDismissDialog';
 import ShareModal from './components/ShareModal';
 import ConnectionsGraph from './components/ConnectionsGraph';
 import EnrichmentService from './services/EnrichmentService';
+import AttachmentService from './services/AttachmentService';
 import { KEEP_COLORS, getColorConfig, getCategoryIcon } from './data/keep_palette';
 import { AuthProvider, useAuth } from './context/AuthContext';
 
@@ -121,7 +122,7 @@ function useKeepData() {
         });
         setCategoriesDocs(map);
       },
-      () => {}
+      () => { }
     );
 
     return () => {
@@ -172,6 +173,8 @@ function LoveKeepApp() {
   // Modales
   const [shareTarget, setShareTarget] = useState(null);
   const [editingItem, setEditingItem] = useState(null);
+  const [editUploadProgress, setEditUploadProgress] = useState(null);
+  const [editFileError, setEditFileError] = useState('');
   const [expandedCategoryName, setExpandedCategoryName] = useState('');
   const [newCategoryModalOpen, setNewCategoryModalOpen] = useState(false);
   const [newCatForm, setNewCatForm] = useState({
@@ -529,6 +532,9 @@ function LoveKeepApp() {
     if (String(it.id).startsWith('seed-')) return;
     try {
       await deleteDoc(doc(db, 'discoveries', it.id));
+      if (it.attachment?.storagePath) {
+        await AttachmentService.deleteAttachment(it.attachment.storagePath);
+      }
     } catch (err) {
       console.error('[Keep] Error al eliminar:', err);
     }
@@ -878,9 +884,8 @@ function LoveKeepApp() {
                   }
                   onDragOver={(e) => e.preventDefault()}
                   onDrop={(e) => handleDropOnCategory(cat.name, e)}
-                  className={`keep-category-card keep-tone-${cat.colorKey} ${
-                    isSelected ? 'is-selected' : ''
-                  } ${cat.hasHighlightedItem ? 'is-related-glow' : ''}`}
+                  className={`keep-category-card keep-tone-${cat.colorKey} ${isSelected ? 'is-selected' : ''
+                    } ${cat.hasHighlightedItem ? 'is-related-glow' : ''}`}
                   style={{ '--card-accent': cat.color.accent }}
                 >
                   {/* Cabecera de la Tarjeta-Categoría */}
@@ -969,9 +974,8 @@ function LoveKeepApp() {
                       return (
                         <li
                           key={it.id}
-                          className={`keep-cat-preview-item ${
-                            it.checked ? 'is-checked' : ''
-                          } ${isRel ? 'is-highlighted' : ''}`}
+                          className={`keep-cat-preview-item ${it.checked ? 'is-checked' : ''
+                            } ${isRel ? 'is-highlighted' : ''}`}
                           onMouseEnter={() => setHoveredItemId(it.id)}
                           onMouseLeave={() => setHoveredItemId('')}
                         >
@@ -1007,8 +1011,8 @@ function LoveKeepApp() {
                                 {it.type === 'link'
                                   ? '🔗'
                                   : it.type === 'word'
-                                  ? '🏷️'
-                                  : '💬'}
+                                    ? '🏷️'
+                                    : '💬'}
                               </span>
                             )}
                             <span className="keep-cat-item-text">{it.title}</span>
@@ -1160,13 +1164,10 @@ function LoveKeepApp() {
                     onDrop={(e) => handleDropOnItem(it, e)}
                     onMouseEnter={() => setHoveredItemId(it.id)}
                     onMouseLeave={() => setHoveredItemId('')}
-                    className={`keep-microcard keep-type-${it.type} keep-tone-${
-                      color.key
-                    } ${it.pinned ? 'is-pinned' : ''} ${
-                      it.checked ? 'is-checked' : ''
-                    } ${isFocusedOrHovered ? 'is-focused' : ''} ${
-                      isRelatedToActive ? 'is-related-glow' : ''
-                    }`}
+                    className={`keep-microcard keep-type-${it.type} keep-tone-${color.key
+                      } ${it.pinned ? 'is-pinned' : ''} ${it.checked ? 'is-checked' : ''
+                      } ${isFocusedOrHovered ? 'is-focused' : ''} ${isRelatedToActive ? 'is-related-glow' : ''
+                      }`}
                     style={{ '--card-accent': color.accent }}
                   >
                     {/* Fila superior de la Mini-Tarjeta: Categoría + Acciones rápidas */}
@@ -1304,6 +1305,39 @@ function LoveKeepApp() {
                       {it.note && (
                         <p className="keep-micro-note">{it.note}</p>
                       )}
+
+                      {it.attachment?.url && (
+                        <a
+                          href={it.attachment.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          onClick={(e) => e.stopPropagation()}
+                          className="keep-micro-attachment"
+                          title={`Abrir fichero adjunto: ${it.attachment.name}`}
+                        >
+                          {AttachmentService.isImageAttachment(it.attachment) ? (
+                            <img
+                              src={it.attachment.url}
+                              alt={it.attachment.name}
+                              className="keep-micro-attachment-thumb"
+                              loading="lazy"
+                            />
+                          ) : (
+                            <span className="keep-micro-attachment-icon">
+                              {AttachmentService.getAttachmentIcon(
+                                it.attachment.contentType,
+                                it.attachment.name
+                              )}
+                            </span>
+                          )}
+                          <span className="keep-micro-attachment-name">
+                            {it.attachment.name}
+                          </span>
+                          <small className="keep-micro-attachment-size">
+                            {AttachmentService.formatFileSize(it.attachment.size)}
+                          </small>
+                        </a>
+                      )}
                     </div>
 
                     {/* Chips de Relaciones Cruzadas con elementos de otras listas */}
@@ -1364,9 +1398,9 @@ function LoveKeepApp() {
             setShareTarget((prev) =>
               prev
                 ? {
-                    ...prev,
-                    item: { ...prev.item, isPublic, sharedWith },
-                  }
+                  ...prev,
+                  item: { ...prev.item, isPublic, sharedWith },
+                }
                 : null
             );
           }
@@ -1401,9 +1435,8 @@ function LoveKeepApp() {
                     <button
                       key={c.key}
                       type="button"
-                      className={`keep-color-dot ${
-                        expandedCategoryCard.colorKey === c.key ? 'selected' : ''
-                      }`}
+                      className={`keep-color-dot ${expandedCategoryCard.colorKey === c.key ? 'selected' : ''
+                        }`}
                       style={{ backgroundColor: c.accent }}
                       onClick={() =>
                         mutateCategory(expandedCategoryCard.name, {
@@ -1463,9 +1496,8 @@ function LoveKeepApp() {
               {expandedCategoryCard.items.map((it) => (
                 <li
                   key={it.id}
-                  className={`keep-expanded-row ${
-                    it.checked ? 'is-checked' : ''
-                  }`}
+                  className={`keep-expanded-row ${it.checked ? 'is-checked' : ''
+                    }`}
                 >
                   {user && (
                     <input
@@ -1571,6 +1603,124 @@ function LoveKeepApp() {
             </div>
 
             <div className="share-section">
+              <label className="share-label" htmlFor="edit-item-file-input">
+                📎 Fichero adjunto (máx. 15 MB)
+              </label>
+              {editingItem.attachment?.url ? (
+                <div className="keep-edit-attachment-card">
+                  {AttachmentService.isImageAttachment(editingItem.attachment) ? (
+                    <a
+                      href={editingItem.attachment.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="keep-edit-attachment-preview"
+                    >
+                      <img
+                        src={editingItem.attachment.url}
+                        alt={editingItem.attachment.name}
+                      />
+                    </a>
+                  ) : null}
+                  <div className="keep-edit-attachment-meta">
+                    <a
+                      href={editingItem.attachment.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="keep-edit-attachment-link"
+                    >
+                      {AttachmentService.getAttachmentIcon(
+                        editingItem.attachment.contentType,
+                        editingItem.attachment.name
+                      )}{' '}
+                      {editingItem.attachment.name} (
+                      {AttachmentService.formatFileSize(editingItem.attachment.size)}) ↗
+                    </a>
+                    {user && (
+                      <div className="keep-edit-attachment-actions">
+                        <label
+                          htmlFor="edit-item-file-input"
+                          className="keep-btn keep-btn-soft"
+                        >
+                          Reemplazar fichero
+                        </label>
+                        <button
+                          type="button"
+                          className="keep-btn-ghost"
+                          onClick={async () => {
+                            const oldPath = editingItem.attachment?.storagePath;
+                            setEditingItem({ ...editingItem, attachment: null });
+                            if (oldPath) {
+                              await AttachmentService.deleteAttachment(oldPath);
+                            }
+                          }}
+                        >
+                          Quitar
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ) : (
+                user && (
+                  <label
+                    htmlFor="edit-item-file-input"
+                    className="keep-btn keep-btn-soft keep-file-upload-label"
+                  >
+                    📎 Seleccionar fichero para adjuntar…
+                  </label>
+                )
+              )}
+              {user && (
+                <input
+                  id="edit-item-file-input"
+                  type="file"
+                  className="keep-sr-only"
+                  onChange={async (e) => {
+                    const file = e.target.files?.[0];
+                    if (!file) return;
+                    setEditFileError('');
+                    try {
+                      setEditUploadProgress(0);
+                      const prevPath = editingItem.attachment?.storagePath;
+                      const uploaded = await AttachmentService.uploadAttachment(
+                        file,
+                        user.uid,
+                        (pct) => setEditUploadProgress(pct)
+                      );
+                      setEditingItem((prev) =>
+                        prev ? { ...prev, attachment: uploaded } : prev
+                      );
+                      if (prevPath) {
+                        await AttachmentService.deleteAttachment(prevPath);
+                      }
+                    } catch (err) {
+                      setEditFileError(err?.message || 'Error al subir el fichero.');
+                    } finally {
+                      setEditUploadProgress(null);
+                      e.target.value = '';
+                    }
+                  }}
+                />
+              )}
+              {editUploadProgress !== null && (
+                <div className="keep-upload-progress-row" role="status" aria-live="polite">
+                  <progress
+                    className="keep-upload-progress"
+                    value={editUploadProgress}
+                    max={100}
+                    aria-label="Progreso de subida del fichero"
+                  />
+                  <span>{editUploadProgress}%</span>
+                </div>
+              )}
+              {editFileError && (
+                <span className="keep-file-error" role="status" aria-live="polite">
+                  {editFileError}
+                </span>
+              )}
+            </div>
+
+            <div className="share-section">
               <label className="share-label">
                 Categoría principal y listas secundarias
               </label>
@@ -1585,15 +1735,14 @@ function LoveKeepApp() {
                       key={c.name}
                       type="button"
                       disabled={!user}
-                      className={`keep-relation-chip ${
-                        isPrimary || isExtra ? 'active' : ''
-                      }`}
+                      className={`keep-relation-chip ${isPrimary || isExtra ? 'active' : ''
+                        }`}
                       onClick={() => {
                         if (isPrimary) return;
                         const nextExtra = isExtra
                           ? (editingItem.extraCategories || []).filter(
-                              (x) => x !== c.name
-                            )
+                            (x) => x !== c.name
+                          )
                           : [...(editingItem.extraCategories || []), c.name];
                         setEditingItem({
                           ...editingItem,
@@ -1661,9 +1810,12 @@ function LoveKeepApp() {
                       favicon: editingItem.favicon || '',
                       note: editingItem.note || '',
                       description: editingItem.note || '',
+                      attachment: editingItem.attachment || null,
                       extraCategories: editingItem.extraCategories || [],
                       relatedIds: editingItem.relatedIds || [],
                     });
+                    setEditFileError('');
+                    setEditUploadProgress(null);
                     setEditingItem(null);
                   }}
                 >
@@ -1707,9 +1859,8 @@ function LoveKeepApp() {
                   <button
                     key={ic}
                     type="button"
-                    className={`keep-relation-chip ${
-                      newCatForm.icon === ic ? 'active' : ''
-                    }`}
+                    className={`keep-relation-chip ${newCatForm.icon === ic ? 'active' : ''
+                      }`}
                     onClick={() => setNewCatForm({ ...newCatForm, icon: ic })}
                   >
                     {ic}
@@ -1726,9 +1877,8 @@ function LoveKeepApp() {
                 <button
                   key={c.key}
                   type="button"
-                  className={`keep-color-dot ${
-                    newCatForm.colorKey === c.key ? 'selected' : ''
-                  }`}
+                  className={`keep-color-dot ${newCatForm.colorKey === c.key ? 'selected' : ''
+                    }`}
                   style={{ backgroundColor: c.accent }}
                   onClick={() =>
                     setNewCatForm({ ...newCatForm, colorKey: c.key })

@@ -42,7 +42,8 @@ export default function ShareModal({
           const check = it.checked ? '☑️' : it.type === 'link' ? '🔗' : it.type === 'word' ? '🏷️' : '💬';
           const main = it.type === 'link' ? `${it.title} (${it.url})` : it.title;
           const note = it.note ? ` — _${it.note}_` : '';
-          return `${check} ${main}${note}`;
+          const att = it.attachment?.url ? ` [📎 ${it.attachment.name}: ${it.attachment.url}]` : '';
+          return `${check} ${main}${note}${att}`;
         }),
         '',
         `🔗 Ver tablero: ${shareUrl}`,
@@ -54,6 +55,7 @@ export default function ShareModal({
       const lines = [
         `${icon} *${it.title}* [${it.category}]`,
         ...(it.url ? [`🌐 ${it.url}`] : []),
+        ...(it.attachment?.url ? [`📎 ${it.attachment.name}: ${it.attachment.url}`] : []),
         ...(it.note ? [`📝 ${it.note}`] : []),
         ...(target.relatedItems?.length
           ? [

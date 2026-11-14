@@ -1,0 +1,45 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+    // Adjuntos de elementos en love.deft.work (máx. 15 MB por fichero)
+    match /love_attachments/{uid}/{allPaths=**} {
+      allow read: if true;
+      allow write: if request.auth != null
+        && request.auth.uid == uid
+        && (request.resource == null || request.resource.size <= 15 * 1024 * 1024);
+    }
+
+    // Documentos públicos del sindicato (union.deft.work)
+    match /unions/{unionSlug}/public/{allPaths=**} {
+      allow read: if true;
+      allow write: if request.auth != null
+        && request.resource != null
+        && request.resource.size < 15 * 1024 * 1024
+        && request.resource.contentType.matches('application/pdf|image/.*|text/plain|text/csv|application/xml|text/xml')
+        && firestore.exists(/databases/(default)/documents/unions/$(unionSlug))
+        && (
+          request.auth.uid in firestore.get(/databases/(default)/documents/unions/$(unionSlug)).data.executiveUids ||
+          firestore.exists(/databases/(default)/documents/unions/$(unionSlug)/members/$(request.auth.uid))
+        );
+    }
+
+    // Documentación interna sindical (union.deft.work)
+    match /unions/{unionSlug}/private/{allPaths=**} {
+      allow read: if request.auth != null
+        && firestore.exists(/databases/(default)/documents/unions/$(unionSlug))
+        && (
+          request.auth.uid in firestore.get(/databases/(default)/documents/unions/$(unionSlug)).data.executiveUids ||
+          firestore.exists(/databases/(default)/documents/unions/$(unionSlug)/members/$(request.auth.uid))
+        );
+      allow write: if request.auth != null
+        && request.resource != null
+        && request.resource.size < 25 * 1024 * 1024
+        && firestore.exists(/databases/(default)/documents/unions/$(unionSlug))
+        && (
+          request.auth.uid in firestore.get(/databases/(default)/documents/unions/$(unionSlug)).data.executiveUids ||
+          firestore.exists(/databases/(default)/documents/unions/$(unionSlug)/members/$(request.auth.uid))
+        );
+    }
+  }
+}
