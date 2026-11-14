@@ -1,9 +1,10 @@
 import React, { useMemo } from 'react';
 import { getColorConfig, getCategoryIcon } from '../data/keep_palette';
+import { extractWikiLinks, resolveWikiTarget } from '../services/MarkdownVaultService';
 
 /**
- * Mapa visual interactivo (SVG) de conexiones entre elementos de distintas listas
- * y referencias cruzadas entre categorías.
+ * Mapa visual interactivo (SVG) estilo Obsidian.md de conexiones entre archivos
+ * ([[WikiLinks]], relaciones reificadas y referencias cruzadas entre categorías).
  */
 export default function ConnectionsGraph({
   items,
@@ -13,26 +14,43 @@ export default function ConnectionsGraph({
   onSelectCategory,
 }) {
   const graph = useMemo(() => {
-    // Include items that have relatedIds, are referenced by another item, or belong to multiple categories
     const referencedSet = new Set();
+    const linkPairs = [];
+
     items.forEach((it) => {
-      if (it.relatedIds?.length > 0 || it.extraCategories?.length > 0) {
+      const mdLinks = extractWikiLinks(it.markdownContent || '');
+      const resolvedWikiIds = mdLinks
+        .map((lnk) => resolveWikiTarget(lnk.target, items)?.id)
+        .filter(Boolean);
+      const targets = new Set([
+        ...(it.relatedIds || []),
+        ...resolvedWikiIds,
+        ...(it.sourceId ? [it.sourceId] : []),
+        ...(it.targetId ? [it.targetId] : []),
+      ]);
+
+      if (targets.size > 0 || it.extraCategories?.length > 0 || it.kind === 'relation') {
         referencedSet.add(it.id);
-        it.relatedIds?.forEach((rId) => referencedSet.add(rId));
+        targets.forEach((tId) => {
+          if (tId !== it.id) {
+            referencedSet.add(tId);
+            linkPairs.push([it.id, tId]);
+          }
+        });
       }
     });
 
     const subset =
       referencedSet.size >= 2
-        ? items.filter((it) => referencedSet.has(it.id)).slice(0, 28)
-        : items.slice(0, 18);
+        ? items.filter((it) => referencedSet.has(it.id)).slice(0, 32)
+        : items.slice(0, 20);
 
     const width = 920;
-    const height = 440;
+    const height = 460;
     const cx = width / 2;
     const cy = height / 2;
-    const rx = 340;
-    const ry = 165;
+    const rx = 345;
+    const ry = 175;
 
     const nodes = subset.map((it, idx) => {
       const angle = (2 * Math.PI * idx) / Math.max(1, subset.length) - Math.PI / 2;
@@ -51,19 +69,18 @@ export default function ConnectionsGraph({
     const edges = [];
     const seenPairs = new Set();
 
-    nodes.forEach((n) => {
-      (n.relatedIds || []).forEach((targetId) => {
-        const target = nodeById[targetId];
-        if (!target) return;
-        const pairKey = [n.id, target.id].sort().join('::');
-        if (seenPairs.has(pairKey)) return;
-        seenPairs.add(pairKey);
-        edges.push({
-          id: pairKey,
-          source: n,
-          target,
-          crossCategory: n.category !== target.category,
-        });
+    linkPairs.forEach(([srcId, dstId]) => {
+      const source = nodeById[srcId];
+      const target = nodeById[dstId];
+      if (!source || !target || source.id === target.id) return;
+      const pairKey = [source.id, target.id].sort().join('::');
+      if (seenPairs.has(pairKey)) return;
+      seenPairs.add(pairKey);
+      edges.push({
+        id: pairKey,
+        source,
+        target,
+        crossCategory: source.category !== target.category,
       });
     });
 

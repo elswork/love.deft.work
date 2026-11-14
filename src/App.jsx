@@ -14,81 +14,24 @@ import {
   increment,
 } from 'firebase/firestore';
 import './index.css';
-import DiscoveryForm from './components/DiscoveryForm';
 import LightDismissDialog from './components/LightDismissDialog';
 import ShareModal from './components/ShareModal';
 import ConnectionsGraph from './components/ConnectionsGraph';
+import MarkdownVaultView from './components/MarkdownVaultView';
 import EnrichmentService from './services/EnrichmentService';
 import AttachmentService from './services/AttachmentService';
+import {
+  getFileDisplayName,
+  getFileBadge,
+  extractWikiLinks,
+  resolveWikiTarget,
+  buildInitialMarkdown,
+  computeVaultConnections,
+} from './services/MarkdownVaultService';
 import { KEEP_COLORS, getColorConfig, getCategoryIcon } from './data/keep_palette';
 import { AuthProvider, useAuth } from './context/AuthContext';
 
-const FALLBACK_SEEDS = [
-  {
-    id: 'seed-1',
-    type: 'link',
-    title: 'Mecanismo de Anticitera · Wikipedia',
-    url: 'https://es.wikipedia.org/wiki/Mecanismo_de_Anticitera',
-    domain: 'es.wikipedia.org',
-    favicon: 'https://www.google.com/s2/favicons?domain=es.wikipedia.org&sz=64',
-    category: 'Anticitera',
-    extraCategories: ['Tecnología'],
-    relatedIds: ['seed-2', 'seed-4'],
-    note: 'Primer computador analógico astronómico conocido.',
-    pinned: true,
-    checked: false,
-    order: 100,
-    clicks: 12,
-    isPublic: true,
-  },
-  {
-    id: 'seed-2',
-    type: 'word',
-    title: 'Episteme',
-    category: 'Palabras & Léxico',
-    extraCategories: ['Anticitera'],
-    relatedIds: ['seed-1', 'seed-3'],
-    note: 'Conocimiento justificado como verdad científica frente a la mera doxa.',
-    pinned: true,
-    checked: false,
-    order: 90,
-    clicks: 8,
-    isPublic: true,
-  },
-  {
-    id: 'seed-3',
-    type: 'phrase',
-    title: '«Dadme un punto de apoyo y moveré el mundo.» — Arquímedes',
-    category: 'Ideas & Citas',
-    extraCategories: ['Anticitera'],
-    relatedIds: ['seed-2'],
-    note: 'Principio de la palanca y soberanía técnica.',
-    pinned: true,
-    checked: false,
-    order: 80,
-    clicks: 15,
-    isPublic: true,
-  },
-  {
-    id: 'seed-4',
-    type: 'link',
-    title: 'Hugging Face · Modelos Abiertos IA',
-    url: 'https://huggingface.co',
-    domain: 'huggingface.co',
-    favicon: 'https://www.google.com/s2/favicons?domain=huggingface.co&sz=64',
-    category: 'Tecnología',
-    extraCategories: [],
-    relatedIds: ['seed-1'],
-    note: 'Repositorio de modelos Gemma, pesos y datasets.',
-    pinned: false,
-    checked: false,
-    order: 70,
-    clicks: 9,
-    isPublic: true,
-  },
-];
-
-function useKeepData() {
+function useVaultData() {
   const [items, setItems] = useState([]);
   const [categoriesDocs, setCategoriesDocs] = useState({});
   const [loading, setLoading] = useState(true);
@@ -101,12 +44,11 @@ function useKeepData() {
         const docs = snapshot.docs.map((d) =>
           EnrichmentService.normalizeDiscoveryDoc({ id: d.id, ...d.data() })
         );
-        setItems(docs.length > 0 ? docs : FALLBACK_SEEDS);
+        setItems(docs);
         setLoading(false);
       },
-      (error) => {
-        console.warn('[Firestore] Usando semillas locales por permisos/red:', error);
-        setItems(FALLBACK_SEEDS);
+      (err) => {
+        console.warn('[Vault] Error escuchando discoveries:', err);
         setLoading(false);
       }
     );
@@ -116,13 +58,13 @@ function useKeepData() {
       (snapshot) => {
         const map = {};
         snapshot.docs.forEach((d) => {
-          const data = d.data();
-          const key = data.name || d.id;
-          map[key] = { id: d.id, ...data };
+          map[d.id] = { id: d.id, ...d.data() };
         });
         setCategoriesDocs(map);
       },
-      () => { }
+      (err) => {
+        console.warn('[Vault] Error escuchando categories:', err);
+      }
     );
 
     return () => {
@@ -131,84 +73,83 @@ function useKeepData() {
     };
   }, []);
 
-  return { items, setItems, categoriesDocs, loading };
+  return { items, setItems, categoriesDocs, setCategoriesDocs, loading };
 }
 
-function catDocId(name) {
-  return (
-    String(name || 'general')
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9áéíóúñ_-]+/gi, '-')
-      .replace(/^-+|-+$/g, '') || 'general'
-  );
-}
-
-function LoveKeepApp() {
-  const { items, setItems, categoriesDocs, loading } = useKeepData();
+function ObsidianVaultBoard() {
   const { user, loginWithGoogle, logout } = useAuth();
+  const { items, setItems, categoriesDocs, setCategoriesDocs, loading } = useVaultData();
 
-  // URL Deep-link params (?cat=... & ?item=...)
-  const initialParams = useMemo(() => {
-    if (typeof window === 'undefined') return { cat: 'All', item: '' };
-    const sp = new URLSearchParams(window.location.search);
-    return {
-      cat: sp.get('cat') || 'All',
-      item: sp.get('item') || '',
-    };
-  }, []);
+  const [renderedScheme, setRenderedScheme] = useState(() => {
+    if (typeof window === 'undefined') return 'light';
+    const meta = document.querySelector('meta[name="color-scheme"]')?.content;
+    if (meta === 'dark' || meta === 'light') return meta;
+    return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  });
 
-  const [selectedCategories, setSelectedCategories] = useState(() =>
-    initialParams.cat && initialParams.cat !== 'All' ? [initialParams.cat] : []
-  );
-  const [focusedItemId, setFocusedItemId] = useState(initialParams.item);
-  const [hoveredItemId, setHoveredItemId] = useState('');
+  // Navegación estilo Obsidian
+  const [activeItemId, setActiveItemId] = useState('');
+  const [editorMode, setEditorMode] = useState('split'); // 'read' | 'edit' | 'split'
+  const [viewMode, setViewMode] = useState('vault'); // 'vault' | 'graph'
   const [searchQuery, setSearchQuery] = useState('');
-  const [typeFilter, setTypeFilter] = useState('all'); // 'all' | 'link' | 'word' | 'phrase'
-  const [sortBy, setSortBy] = useState('smart'); // 'smart' | 'recent' | 'alpha' | 'clicks'
-  const [viewMode, setViewMode] = useState('board'); // 'board' | 'graph'
-  const [quickInlineByCat, setQuickInlineByCat] = useState({});
-  const [copiedId, setCopiedId] = useState('');
+  const [fileKindFilter, setFileKindFilter] = useState('all'); // 'all' | 'markdown' | 'media' | 'link' | 'relation'
+  const [collapsedCats, setCollapsedCats] = useState({});
+
+  // Borrador del editor Markdown activo
+  const [draftTitle, setDraftTitle] = useState('');
+  const [draftMarkdown, setDraftMarkdown] = useState('');
+  const [draftUrl, setDraftUrl] = useState('');
+  const [dirty, setDirty] = useState(false);
+  const [savingDraft, setSavingDraft] = useState(false);
+
+  // Autocompletado [[WikiLink]] en el editor
+  const [wikiSuggestQuery, setWikiSuggestQuery] = useState('');
+  const [showWikiSuggest, setShowWikiSuggest] = useState(false);
+  const editorTextareaRef = useRef(null);
+
+  // Subida rápida de archivos
+  const [uploadProgress, setUploadProgress] = useState(null);
+  const [uploadError, setUploadError] = useState('');
+  const quickFileInputRef = useRef(null);
+  const attachFileInputRef = useRef(null);
+
+  // Panel de nueva relación-elemento
+  const [relTargetId, setRelTargetId] = useState('');
+  const [relLabel, setRelLabel] = useState('conecta con');
 
   // Modales
   const [shareTarget, setShareTarget] = useState(null);
-  const [editingItem, setEditingItem] = useState(null);
-  const [editUploadProgress, setEditUploadProgress] = useState(null);
-  const [editFileError, setEditFileError] = useState('');
-  const [expandedCategoryName, setExpandedCategoryName] = useState('');
+  const [newNoteModalOpen, setNewNoteModalOpen] = useState(false);
+  const [newNoteForm, setNewNoteForm] = useState({
+    title: '',
+    category: 'Anticitera',
+    url: '',
+    isPublic: true,
+  });
   const [newCategoryModalOpen, setNewCategoryModalOpen] = useState(false);
   const [newCatForm, setNewCatForm] = useState({
     name: '',
-    icon: '📌',
+    icon: '📁',
     colorKey: 'emerald',
     note: '',
     isPublic: true,
   });
 
-  // Drag & Drop state
-  const [dragState, setDragState] = useState(null); // { kind: 'item' | 'category', id: string }
+  // Drag & Drop entre listas
+  const [dragItemId, setDragItemId] = useState('');
   const searchInputRef = useRef(null);
 
-  // Dark/Light mode state synced with <meta name="color-scheme"> per modern-web-guidance
-  const [renderedScheme, setRenderedScheme] = useState(() => {
-    if (typeof window === 'undefined') return 'dark';
-    const meta = document.querySelector('meta[name="color-scheme"]')?.content;
-    if (meta === 'light' || meta === 'dark') return meta;
-    return window.matchMedia('(prefers-color-scheme: dark)').matches
-      ? 'dark'
-      : 'light';
-  });
-
+  // Tema claro/oscuro sincronizado
   useEffect(() => {
-    if (typeof window === 'undefined') return undefined;
     const mql = window.matchMedia('(prefers-color-scheme: dark)');
     const syncScheme = () => {
-      const stored = localStorage.getItem('color-scheme');
-      const meta = document.querySelector('meta[name="color-scheme"]');
-      if (meta) {
-        meta.content = stored ?? 'light dark';
+      let stored = null;
+      try {
+        stored = localStorage.getItem('color-scheme');
+      } catch (err) {
+        void err;
       }
-      if (stored === 'light' || stored === 'dark') {
+      if (stored === 'dark' || stored === 'light') {
         setRenderedScheme(stored);
       } else {
         setRenderedScheme(mql.matches ? 'dark' : 'light');
@@ -223,13 +164,11 @@ function LoveKeepApp() {
   }, []);
 
   const toggleColorScheme = () => {
-    if (typeof window === 'undefined') return;
     const systemScheme = window.matchMedia('(prefers-color-scheme: dark)').matches
       ? 'dark'
       : 'light';
     const target = renderedScheme === 'dark' ? 'light' : 'dark';
     const meta = document.querySelector('meta[name="color-scheme"]');
-
     if (target === systemScheme) {
       try {
         localStorage.removeItem('color-scheme');
@@ -248,7 +187,7 @@ function LoveKeepApp() {
     setRenderedScheme(target);
   };
 
-  // Atajo global Ctrl+K o '/' para buscar
+  // Atajos de teclado Ctrl+K / '/' para buscar, Ctrl+S para guardar
   useEffect(() => {
     const onKeyDown = (e) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
@@ -266,523 +205,599 @@ function LoveKeepApp() {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, []);
 
-  // Filtro de visibilidad según sesión
+  // Filtrado por visibilidad (público / propietario / colaborador)
   const visibleItems = useMemo(() => {
     return items.filter((it) => {
-      const catMeta = categoriesDocs[it.category];
-      const catPublic = catMeta ? catMeta.isPublic !== false : true;
-      if (it.isPublic && catPublic) return true;
+      if (it.isPublic !== false) return true;
       if (!user) return false;
       if (user.email === 'elswork@gmail.com') return true;
       if (it.ownerUid && it.ownerUid === user.uid) return true;
       if (it.ownerEmail && it.ownerEmail === user.email) return true;
-      if (Array.isArray(it.sharedWith) && it.sharedWith.includes(user.email)) {
-        return true;
-      }
-      if (
-        catMeta &&
-        Array.isArray(catMeta.sharedWith) &&
-        catMeta.sharedWith.includes(user.email)
-      ) {
-        return true;
-      }
-      return true;
+      if (Array.isArray(it.sharedWith) && it.sharedWith.includes(user.email)) return true;
+      return false;
     });
-  }, [items, categoriesDocs, user]);
+  }, [items, user]);
 
-  const itemsById = useMemo(() => {
-    const map = {};
-    visibleItems.forEach((it) => {
-      map[it.id] = it;
+  const itemsById = useMemo(
+    () => Object.fromEntries(visibleItems.map((it) => [it.id, it])),
+    [visibleItems]
+  );
+
+  // Deep-link inicial (?item=... o ?cat=...) o seleccionar primer archivo
+  useEffect(() => {
+    if (visibleItems.length === 0) return;
+    const params = new URLSearchParams(window.location.search);
+    const itemParam = params.get('item');
+    if (itemParam && itemsById[itemParam]) {
+      setActiveItemId(itemParam);
+      return;
+    }
+    if (!activeItemId || !itemsById[activeItemId]) {
+      const preferred = visibleItems.find((it) => it.pinned) || visibleItems[0];
+      if (preferred) setActiveItemId(preferred.id);
+    }
+  }, [visibleItems, itemsById, activeItemId]);
+
+  const activeItem = itemsById[activeItemId] || null;
+
+  // Sincronizar borrador al cambiar de archivo activo
+  useEffect(() => {
+    if (!activeItem) {
+      setDraftTitle('');
+      setDraftMarkdown('');
+      setDraftUrl('');
+      setDirty(false);
+      return;
+    }
+    setDraftTitle(activeItem.title || '');
+    setDraftMarkdown(buildInitialMarkdown(activeItem, itemsById));
+    setDraftUrl(activeItem.url || '');
+    setDirty(false);
+    setShowWikiSuggest(false);
+    setUploadError('');
+  }, [activeItemId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Filtrado de archivos por búsqueda y tipo
+  const filteredFiles = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    return visibleItems.filter((it) => {
+      const badge = getFileBadge(it);
+      if (fileKindFilter === 'markdown' && badge.kind !== 'markdown') return false;
+      if (
+        fileKindFilter === 'media' &&
+        !['image', 'pdf', 'video', 'audio'].includes(badge.kind)
+      ) {
+        return false;
+      }
+      if (fileKindFilter === 'link' && badge.kind !== 'link') return false;
+      if (fileKindFilter === 'relation' && badge.kind !== 'relation') return false;
+
+      if (!q) return true;
+      return (
+        it.title.toLowerCase().includes(q) ||
+        getFileDisplayName(it).toLowerCase().includes(q) ||
+        it.category.toLowerCase().includes(q) ||
+        (it.note && it.note.toLowerCase().includes(q)) ||
+        (it.markdownContent && it.markdownContent.toLowerCase().includes(q))
+      );
     });
-    return map;
+  }, [visibleItems, searchQuery, fileKindFilter]);
+
+  // Construcción de Categorías como Listas de Archivos (todos los tipos)
+  const categoryLists = useMemo(() => {
+    const map = new Map();
+
+    const ensureCat = (name) => {
+      if (!map.has(name)) {
+        const meta = categoriesDocs[name] || {};
+        const color = getColorConfig(meta.colorKey || name);
+        map.set(name, {
+          name,
+          icon: meta.icon || getCategoryIcon(name),
+          colorKey: color.key,
+          accent: color.accent,
+          note: meta.note || '',
+          pinned: Boolean(meta.pinned),
+          order: typeof meta.order === 'number' ? meta.order : 0,
+          isPublic: meta.isPublic !== undefined ? Boolean(meta.isPublic) : true,
+          sharedWith: Array.isArray(meta.sharedWith) ? meta.sharedWith : [],
+          files: [],
+        });
+      }
+      return map.get(name);
+    };
+
+    Object.keys(categoriesDocs).forEach((catName) => ensureCat(catName));
+
+    filteredFiles.forEach((it) => {
+      const primary = ensureCat(it.category || 'General');
+      primary.files.push({ item: it, isCrossRef: false });
+
+      (it.extraCategories || []).forEach((xCat) => {
+        if (xCat && xCat !== it.category) {
+          ensureCat(xCat).files.push({ item: it, isCrossRef: true });
+        }
+      });
+    });
+
+    const list = Array.from(map.values()).filter((cat) => {
+      if (cat.isPublic !== false) return true;
+      if (!user) return false;
+      if (user.email === 'elswork@gmail.com') return true;
+      if (categoriesDocs[cat.name]?.ownerUid === user.uid) return true;
+      if (cat.sharedWith.includes(user.email)) return true;
+      return false;
+    });
+
+    list.forEach((cat) => {
+      cat.files.sort((a, b) => {
+        if (a.item.pinned !== b.item.pinned) return a.item.pinned ? -1 : 1;
+        return a.item.title.localeCompare(b.item.title, 'es');
+      });
+    });
+
+    list.sort((a, b) => {
+      if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+      if (b.order !== a.order) return b.order - a.order;
+      return b.files.length - a.files.length;
+    });
+
+    return list;
+  }, [filteredFiles, categoriesDocs, user]);
+
+  // Conexiones (salientes, backlinks, relaciones reificadas) del archivo activo
+  const activeConnections = useMemo(
+    () => computeVaultConnections(activeItem, visibleItems),
+    [activeItem, visibleItems]
+  );
+
+  // Total de conexiones en la bóveda
+  const totalConnectionsCount = useMemo(() => {
+    let count = 0;
+    visibleItems.forEach((it) => {
+      const wikis = extractWikiLinks(it.markdownContent || '');
+      count += wikis.length + (it.relatedIds?.length || 0);
+    });
+    return count;
   }, [visibleItems]);
 
-  // Mapa simétrico de relaciones entre elementos (si A apunta a B, B también muestra A)
-  const relatedMap = useMemo(() => {
-    const map = {};
-    visibleItems.forEach((it) => {
-      if (!map[it.id]) map[it.id] = new Set();
-      (it.relatedIds || []).forEach((targetId) => {
-        if (itemsById[targetId] && targetId !== it.id) {
-          map[it.id].add(targetId);
-          if (!map[targetId]) map[targetId] = new Set();
-          map[targetId].add(it.id);
-        }
-      });
-    });
-    return map;
-  }, [visibleItems, itemsById]);
-
-  const activeHighlightId = hoveredItemId || focusedItemId;
-  const highlightedRelatedIds = useMemo(() => {
-    if (!activeHighlightId || !relatedMap[activeHighlightId]) return new Set();
-    return relatedMap[activeHighlightId];
-  }, [activeHighlightId, relatedMap]);
-
-  // Función de ordenación de elementos
-  const sortItemsList = useMemo(() => {
-    return (list) => {
-      return [...list].sort((a, b) => {
-        // 1. Los completados (checked) siempre van al final de la lista
-        if (a.checked !== b.checked) return a.checked ? 1 : -1;
-        // 2. Los fijados (pinned) siempre van arriba
-        if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
-
-        if (sortBy === 'alpha') {
-          return a.title.localeCompare(b.title, 'es');
-        }
-        if (sortBy === 'clicks') {
-          return (b.clicks || 0) - (a.clicks || 0);
-        }
-        if (sortBy === 'recent') {
-          return (b.createdAtMs || b.order || 0) - (a.createdAtMs || a.order || 0);
-        }
-        // 'smart' / manual order
-        if ((b.order || 0) !== (a.order || 0)) {
-          return (b.order || 0) - (a.order || 0);
-        }
-        return (b.relevance_score || 0) - (a.relevance_score || 0);
-      });
-    };
-  }, [sortBy]);
-
-  // Nivel Superior: Construcción de Tarjetas-Categoría
-  const categoryCards = useMemo(() => {
-    const byCat = {};
-
-    // Incluir categorías definidas explícitamente en Firestore `categories`
-    Object.values(categoriesDocs).forEach((catDoc) => {
-      if (!catDoc?.name) return;
-      if (catDoc.isPublic === false && !user) return;
-      byCat[catDoc.name] = {
-        name: catDoc.name,
-        meta: catDoc,
-        items: [],
-      };
-    });
-
-    // Agrupar ítems por categoría principal y por referencias cruzadas (extraCategories)
-    visibleItems.forEach((it) => {
-      const allCats = [it.category, ...(it.extraCategories || [])].filter(Boolean);
-      allCats.forEach((catName) => {
-        if (!byCat[catName]) {
-          byCat[catName] = {
-            name: catName,
-            meta: categoriesDocs[catName] || null,
-            items: [],
-          };
-        }
-        if (!byCat[catName].items.some((x) => x.id === it.id)) {
-          byCat[catName].items.push(it);
-        }
-      });
-    });
-
-    const list = Object.values(byCat).map((entry) => {
-      const meta = entry.meta || {};
-      const color = getColorConfig(meta.colorKey || entry.name);
-      const sorted = sortItemsList(entry.items);
-      const linksCount = sorted.filter((i) => i.type === 'link').length;
-      const wordsCount = sorted.filter((i) => i.type === 'word').length;
-      const phrasesCount = sorted.filter((i) => i.type === 'phrase').length;
-      const hasHighlightedItem =
-        activeHighlightId &&
-        sorted.some(
-          (i) => i.id === activeHighlightId || highlightedRelatedIds.has(i.id)
-        );
-
-      return {
-        name: entry.name,
-        icon: getCategoryIcon(entry.name, meta.icon),
-        color,
-        colorKey: color.key,
-        pinned: Boolean(meta.pinned),
-        order: typeof meta.order === 'number' ? meta.order : 0,
-        isPublic: meta.isPublic !== undefined ? Boolean(meta.isPublic) : true,
-        sharedWith: Array.isArray(meta.sharedWith) ? meta.sharedWith : [],
-        note: meta.note || '',
-        items: sorted,
-        linksCount,
-        wordsCount,
-        phrasesCount,
-        hasHighlightedItem,
-      };
-    });
-
-    return list.sort((a, b) => {
-      if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
-      if (a.order !== b.order) return b.order - a.order;
-      return b.items.length - a.items.length;
-    });
-  }, [visibleItems, categoriesDocs, user, sortItemsList, activeHighlightId, highlightedRelatedIds]);
-
-  // Nivel Inferior: Muro filtrado de Mini-Tarjetas
-  const filteredWallItems = useMemo(() => {
-    const q = searchQuery.trim().toLowerCase();
-    const filtered = visibleItems.filter((it) => {
-      if (selectedCategories.length > 0) {
-        const inPrimary = selectedCategories.includes(it.category);
-        const inExtra = (it.extraCategories || []).some((c) =>
-          selectedCategories.includes(c)
-        );
-        if (!inPrimary && !inExtra) return false;
-      }
-      if (typeFilter !== 'all' && it.type !== typeFilter) return false;
-      if (q) {
-        const hay = [
-          it.title,
-          it.note,
-          it.category,
-          ...(it.extraCategories || []),
-          it.domain,
-          it.url,
-        ]
-          .filter(Boolean)
-          .join(' ')
-          .toLowerCase();
-        if (!hay.includes(q)) return false;
-      }
-      return true;
-    });
-
-    return sortItemsList(filtered);
-  }, [visibleItems, selectedCategories, typeFilter, searchQuery, sortItemsList]);
-
-  // Acciones Firestore / Estado optimista
-  const mutateItem = async (itemId, patch) => {
-    setItems((prev) =>
-      prev.map((it) => (it.id === itemId ? { ...it, ...patch } : it))
-    );
-    if (String(itemId).startsWith('seed-')) return;
+  // Mutaciones Firestore
+  const mutateItem = async (id, patch) => {
+    setItems((prev) => prev.map((it) => (it.id === id ? { ...it, ...patch } : it)));
+    if (!user) return;
     try {
-      await updateDoc(doc(db, 'discoveries', itemId), patch);
+      await updateDoc(doc(db, 'discoveries', id), {
+        ...patch,
+        updatedAt: serverTimestamp(),
+      });
     } catch (err) {
-      console.error('[Keep] Error actualizando elemento:', err);
+      console.error('[Vault] Error actualizando archivo:', err);
     }
   };
 
-  const mutateCategory = async (categoryName, patch) => {
-    const id = catDocId(categoryName);
+  const mutateCategory = async (catName, patch) => {
+    setCategoriesDocs((prev) => ({
+      ...prev,
+      [catName]: { ...(prev[catName] || { name: catName }), ...patch },
+    }));
+    if (!user) return;
     try {
       await setDoc(
-        doc(db, 'categories', id),
+        doc(db, 'categories', catName),
         {
-          name: categoryName,
+          name: catName,
+          ownerUid: categoriesDocs[catName]?.ownerUid || user.uid,
+          ownerEmail: categoriesDocs[catName]?.ownerEmail || user.email || '',
           ...patch,
           updatedAt: serverTimestamp(),
         },
         { merge: true }
       );
     } catch (err) {
-      console.error('[Keep] Error actualizando categoría:', err);
+      console.error('[Vault] Error actualizando categoría:', err);
     }
   };
 
-  const handleToggleItemPin = (it) => {
-    if (!user) return;
-    mutateItem(it.id, { pinned: !it.pinned });
-  };
-
-  const handleToggleItemCheck = (it) => {
-    if (!user) return;
-    mutateItem(it.id, { checked: !it.checked });
-  };
-
-  const handleItemAction = async (it) => {
-    if (it.type === 'link' && it.url) {
-      window.open(it.url, '_blank', 'noopener,noreferrer');
-    } else {
-      try {
-        await navigator.clipboard.writeText(it.title);
-        setCopiedId(it.id);
-        setTimeout(() => setCopiedId(''), 1800);
-      } catch (err) {
-        void err;
-      }
-    }
-
-    if (user && !String(it.id).startsWith('seed-')) {
-      try {
-        await updateDoc(doc(db, 'discoveries', it.id), {
-          clicks: increment(1),
-        });
-      } catch (err) {
-        void err;
-      }
-    }
-  };
-
-  const handleCopyItem = async (it, e) => {
-    if (e) e.stopPropagation();
-    const content = it.type === 'link' && it.url ? it.url : it.title;
+  // Guardar cambios del editor Markdown activo
+  const handleSaveActiveDraft = async () => {
+    if (!activeItem || !user || savingDraft) return;
+    setSavingDraft(true);
     try {
-      await navigator.clipboard.writeText(content);
-      setCopiedId(it.id);
-      setTimeout(() => setCopiedId(''), 1800);
-    } catch (err) {
-      void err;
+      const wikis = extractWikiLinks(draftMarkdown);
+      const wikiIds = wikis
+        .map((w) => resolveWikiTarget(w.target, visibleItems)?.id)
+        .filter((id) => id && id !== activeItem.id);
+      const mergedRelatedIds = Array.from(
+        new Set([...(activeItem.relatedIds || []), ...wikiIds])
+      );
+
+      const firstParagraph =
+        draftMarkdown
+          .split('\n')
+          .find((l) => l.trim() && !l.trim().startsWith('#')) || '';
+
+      await mutateItem(activeItem.id, {
+        title: draftTitle.trim() || activeItem.title,
+        name: draftTitle.trim() || activeItem.title,
+        url: draftUrl.trim(),
+        domain: draftUrl.trim() ? EnrichmentService.extractDomain(draftUrl.trim()) : '',
+        favicon: draftUrl.trim() ? EnrichmentService.getFaviconUrl(draftUrl.trim()) : '',
+        markdownContent: draftMarkdown,
+        note: firstParagraph.replace(/^[-*>\s]+/, '').slice(0, 140),
+        description: firstParagraph.replace(/^[-*>\s]+/, '').slice(0, 140),
+        relatedIds: mergedRelatedIds,
+      });
+      setDirty(false);
+    } finally {
+      setSavingDraft(false);
     }
   };
 
-  const handleDeleteItem = async (it, e) => {
-    if (e) e.stopPropagation();
-    if (!user) return;
+  // Crear un nuevo archivo .md en una categoría (o desde un WikiLink inexistente)
+  const createMarkdownFile = async ({
+    title,
+    category = 'Anticitera',
+    url = '',
+    markdownContent = '',
+    kind = 'file',
+    sourceId = '',
+    targetId = '',
+    relationLabel = '',
+    attachment = null,
+    isPublic = true,
+  }) => {
+    if (!user) {
+      await loginWithGoogle();
+      return null;
+    }
+    const cleanTitle = String(title || 'Nueva nota').trim();
+    const initialMd =
+      markdownContent ||
+      `# ${cleanTitle}\n\nEscribe aquí tu nota en Markdown. Usa \`[[Nombre]]\` para enlazar otros archivos o \`![[archivo]]\` para incrustarlos.\n`;
+
+    const payload = {
+      title: cleanTitle,
+      name: cleanTitle,
+      type: url ? 'link' : 'phrase',
+      kind,
+      sourceId,
+      targetId,
+      relationLabel,
+      url,
+      domain: url ? EnrichmentService.extractDomain(url) : '',
+      favicon: url ? EnrichmentService.getFaviconUrl(url) : '',
+      attachment,
+      markdownContent: initialMd,
+      note: '',
+      description: '',
+      category,
+      extraCategories: [],
+      relatedIds: [sourceId, targetId].filter(Boolean),
+      pinned: false,
+      checked: false,
+      order: Date.now(),
+      clicks: 0,
+      colorKey: getColorConfig(category).key,
+      isPublic,
+      sharedWith: [],
+      ownerUid: user.uid,
+      ownerEmail: user.email || '',
+      createdAt: serverTimestamp(),
+    };
+
+    const ref = await addDoc(collection(db, 'discoveries'), payload);
+    setActiveItemId(ref.id);
+    setViewMode('vault');
+    return ref.id;
+  };
+
+  // Subir cualquier tipo de archivo (.md, .png, .pdf, .mp4, etc.) como elemento nuevo o adjunto
+  const handleUploadNewFile = async (file, targetCategory = 'Archivo & Notas') => {
+    if (!file) return;
+    if (!user) {
+      await loginWithGoogle();
+      return;
+    }
+    setUploadError('');
+    try {
+      setUploadProgress(0);
+      const uploaded = await AttachmentService.uploadAttachment(
+        file,
+        user.uid,
+        (pct) => setUploadProgress(pct)
+      );
+
+      let initialMd = '';
+      if (file.name.toLowerCase().endsWith('.md') || file.type === 'text/markdown') {
+        initialMd = await file.text();
+      } else {
+        initialMd = `# ${AttachmentService.cleanFileTitle(file.name)}\n\n![[${file.name}]]\n\n## Notas y conexiones\n`;
+      }
+
+      await createMarkdownFile({
+        title: file.name.toLowerCase().endsWith('.md')
+          ? AttachmentService.cleanFileTitle(file.name)
+          : file.name,
+        category: targetCategory,
+        markdownContent: initialMd,
+        attachment: uploaded,
+      });
+    } catch (err) {
+      setUploadError(err?.message || 'Error al subir el archivo.');
+    } finally {
+      setUploadProgress(null);
+    }
+  };
+
+  // Adjuntar o reemplazar archivo dentro del elemento actualmente abierto
+  const handleAttachToActiveItem = async (file) => {
+    if (!file || !activeItem || !user) return;
+    setUploadError('');
+    try {
+      setUploadProgress(0);
+      const prevPath = activeItem.attachment?.storagePath;
+      const uploaded = await AttachmentService.uploadAttachment(
+        file,
+        user.uid,
+        (pct) => setUploadProgress(pct)
+      );
+      await mutateItem(activeItem.id, { attachment: uploaded });
+      if (prevPath) {
+        await AttachmentService.deleteAttachment(prevPath);
+      }
+    } catch (err) {
+      setUploadError(err?.message || 'Error al adjuntar el fichero.');
+    } finally {
+      setUploadProgress(null);
+    }
+  };
+
+  // Crear Relación-Elemento (.md reificado entre activo y destino)
+  const handleCreateRelationElement = async (e) => {
+    e.preventDefault();
+    if (!activeItem || !relTargetId || !user) return;
+    const target = itemsById[relTargetId];
+    if (!target) return;
+
+    const label = relLabel.trim() || 'conecta con';
+    const relTitle = `${activeItem.title} — ${label} → ${target.title}`;
+    const relMd = [
+      `# Relación: ${activeItem.title} ↔ ${target.title}`,
+      '',
+      `> **Tipo de relación**: \`${label}\``,
+      '',
+      `- **Origen**: [[${activeItem.title}]]`,
+      `- **Destino**: [[${target.title}]]`,
+      '',
+      '## Análisis de la conexión',
+      `Explica aquí por qué **[[${activeItem.title}]]** *${label}* **[[${target.title}]]** y adjunta evidencias si es necesario.`,
+      '',
+    ].join('\n');
+
+    await createMarkdownFile({
+      title: relTitle,
+      category: activeItem.category,
+      markdownContent: relMd,
+      kind: 'relation',
+      sourceId: activeItem.id,
+      targetId: target.id,
+      relationLabel: label,
+    });
+    setRelTargetId('');
+  };
+
+  const handleDeleteItem = async (it) => {
+    if (!user || !it) return;
     setItems((prev) => prev.filter((x) => x.id !== it.id));
-    if (String(it.id).startsWith('seed-')) return;
+    if (activeItemId === it.id) setActiveItemId('');
     try {
       await deleteDoc(doc(db, 'discoveries', it.id));
       if (it.attachment?.storagePath) {
         await AttachmentService.deleteAttachment(it.attachment.storagePath);
       }
     } catch (err) {
-      console.error('[Keep] Error al eliminar:', err);
+      console.error('[Vault] Error al eliminar:', err);
     }
   };
 
-  // Añadir ítem rápido desde dentro de una Tarjeta-Categoría
-  const handleQuickAddInCategory = async (categoryName, e) => {
-    e.preventDefault();
-    if (!user) return;
-    const text = (quickInlineByCat[categoryName] || '').trim();
-    if (!text) return;
-
-    const parsed = EnrichmentService.parseQuickInput(text, visibleItems);
-    const payload = {
-      name: parsed.title,
-      title: parsed.title,
-      type: parsed.type,
-      url: parsed.url,
-      domain: parsed.domain,
-      favicon: parsed.favicon,
-      category: categoryName,
-      extraCategories: parsed.extraCategories,
-      relatedIds: parsed.relatedIds,
-      note: '',
-      description: '',
-      pinned: false,
-      checked: false,
-      order: Date.now(),
-      clicks: 0,
-      relevance_score: 75,
-      colorKey: getColorConfig(categoryName).key,
-      isPublic: true,
-      sharedWith: [],
-      ownerUid: user.uid || '',
-      ownerEmail: user.email || '',
-      status: 'completed',
-      createdAt: serverTimestamp(),
-    };
-
-    setQuickInlineByCat((prev) => ({ ...prev, [categoryName]: '' }));
-    try {
-      await addDoc(collection(db, 'discoveries'), payload);
-    } catch (err) {
-      console.error('[Keep] Error añadiendo en lista:', err);
+  // Autocompletado [[ en el editor Markdown
+  const handleEditorChange = (val) => {
+    setDraftMarkdown(val);
+    setDirty(true);
+    const ta = editorTextareaRef.current;
+    const pos = ta ? ta.selectionStart : val.length;
+    const slice = val.slice(0, pos);
+    const match = slice.match(/\[\[([^\]\n]*)$/);
+    if (match) {
+      setWikiSuggestQuery(match[1]);
+      setShowWikiSuggest(true);
+    } else {
+      setShowWikiSuggest(false);
     }
   };
 
-  // Drag & Drop handlers (tanto para ítems como para categorías)
-  const handleDropOnCategory = (targetCategoryName, e) => {
-    e.preventDefault();
-    if (!user || !dragState) return;
+  const insertWikiSuggestion = (targetItem, asEmbed = false) => {
+    const ta = editorTextareaRef.current;
+    const token = asEmbed
+      ? `![[${targetItem.attachment?.name || targetItem.title}]]`
+      : `[[${targetItem.title}]]`;
 
-    if (dragState.kind === 'item') {
-      const draggedItem = itemsById[dragState.id];
-      if (!draggedItem) return;
-
-      if (e.altKey || e.shiftKey) {
-        // Con Alt/Shift: añade referencia cruzada a esa categoría sin quitar la principal
-        if (
-          draggedItem.category !== targetCategoryName &&
-          !(draggedItem.extraCategories || []).includes(targetCategoryName)
-        ) {
-          mutateItem(draggedItem.id, {
-            extraCategories: [...(draggedItem.extraCategories || []), targetCategoryName],
-          });
-        }
-      } else if (draggedItem.category !== targetCategoryName) {
-        mutateItem(draggedItem.id, {
-          category: targetCategoryName,
-        });
-      }
-    } else if (dragState.kind === 'category' && dragState.id !== targetCategoryName) {
-      const targetCard = categoryCards.find((c) => c.name === targetCategoryName);
-      const nextOrder = (targetCard?.order || 100) + 10;
-      mutateCategory(dragState.id, { order: nextOrder });
+    if (!ta) {
+      setDraftMarkdown((prev) => `${prev}\n${token}`);
+      setDirty(true);
+      setShowWikiSuggest(false);
+      return;
     }
-    setDragState(null);
+
+    const pos = ta.selectionStart;
+    const before = draftMarkdown.slice(0, pos);
+    const after = draftMarkdown.slice(pos);
+    const replacedBefore = before.replace(/\[\[([^\]\n]*)$/, token);
+    const nextVal = replacedBefore + after;
+    setDraftMarkdown(nextVal);
+    setDirty(true);
+    setShowWikiSuggest(false);
+    requestAnimationFrame(() => ta.focus());
   };
 
-  const handleDropOnItem = (targetItem, e) => {
-    e.preventDefault();
-    if (!user || !dragState || dragState.kind !== 'item') return;
-    if (dragState.id === targetItem.id) return;
+  const wikiSuggestions = useMemo(() => {
+    const q = wikiSuggestQuery.trim().toLowerCase();
+    return visibleItems
+      .filter((it) => it.id !== activeItemId)
+      .filter(
+        (it) =>
+          !q ||
+          it.title.toLowerCase().includes(q) ||
+          getFileDisplayName(it).toLowerCase().includes(q)
+      )
+      .slice(0, 8);
+  }, [visibleItems, wikiSuggestQuery, activeItemId]);
 
-    const nextOrder = (targetItem.order || 100) + 5;
-    mutateItem(dragState.id, { order: nextOrder });
-    setDragState(null);
+  const openVaultItem = (it) => {
+    if (!it) return;
+    setActiveItemId(it.id);
+    setViewMode('vault');
+    if (user) {
+      updateDoc(doc(db, 'discoveries', it.id), { clicks: increment(1) }).catch((e) => void e);
+    }
   };
 
-  const toggleCategorySelection = (catName, multi = false) => {
-    setSelectedCategories((prev) => {
-      if (prev.includes(catName)) {
-        return prev.filter((c) => c !== catName);
-      }
-      return multi ? [...prev, catName] : [catName];
-    });
-  };
-
-  const handleCreateNewCategory = async (e) => {
-    e.preventDefault();
-    const cleanName = newCatForm.name.trim();
-    if (!cleanName || !user) return;
-    await mutateCategory(cleanName, {
-      name: cleanName,
-      icon: newCatForm.icon || '📌',
-      colorKey: newCatForm.colorKey || 'emerald',
-      note: newCatForm.note.trim(),
-      isPublic: newCatForm.isPublic,
-      pinned: true,
-      order: Date.now(),
-      ownerUid: user.uid || '',
-      ownerEmail: user.email || '',
-    });
-    setNewCatForm({
-      name: '',
-      icon: '📌',
-      colorKey: 'emerald',
-      note: '',
-      isPublic: true,
-    });
-    setNewCategoryModalOpen(false);
-  };
-
-  const expandedCategoryCard = useMemo(
-    () => categoryCards.find((c) => c.name === expandedCategoryName) || null,
-    [categoryCards, expandedCategoryName]
-  );
+  const activeBadge = activeItem ? getFileBadge(activeItem) : null;
 
   return (
-    <div className="keep-app">
-      {/* ===================================================================
-          BARRA SUPERIOR (HEADER ESTILO GOOGLE KEEP MODERNO)
-      =================================================================== */}
-      <header className="keep-topbar">
-        <div className="keep-topbar-left">
-          <div
-            className="keep-brand"
-            onClick={() => {
-              setSelectedCategories([]);
-              setFocusedItemId('');
-              setSearchQuery('');
-            }}
-            role="button"
-            tabIndex={0}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') setSelectedCategories([]);
-            }}
-          >
-            <span className="keep-brand-logo">✦</span>
-            <div>
-              <h1 className="keep-brand-title">love.deft.work</h1>
-              <span className="keep-brand-sub">
-                Listas por Categorías · Links, Palabras y Frases Conectadas
-              </span>
+    <div className="obsidian-app">
+      {/* =================================================================
+          HEADER DE BÓVEDA OBSIDIAN
+      ================================================================= */}
+      <header className="obsidian-topbar">
+        <div className="obsidian-brand-group">
+          <div className="obsidian-logo-mark" aria-hidden="true">
+            ◈
+          </div>
+          <div>
+            <div className="obsidian-brand-row">
+              <h1 className="obsidian-brand-title">love.deft.work</h1>
+              <span className="obsidian-vault-pill">Bóveda Obsidian</span>
             </div>
+            <p className="obsidian-brand-sub">
+              {visibleItems.length} archivos · {totalConnectionsCount} enlaces ·{' '}
+              {categoryLists.length} listas
+            </p>
           </div>
         </div>
 
-        {/* Buscador instantáneo Ctrl+K */}
-        <div className="keep-search-box">
-          <span className="keep-search-icon">🔍</span>
+        <search className="obsidian-search-wrap">
+          <span className="obsidian-search-icon" aria-hidden="true">
+            🔍
+          </span>
           <input
             ref={searchInputRef}
             type="search"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Buscar links, palabras, frases o #categorías… (Ctrl+K)"
-            className="keep-search-input"
-            aria-label="Buscar en love.deft.work"
+            placeholder="Buscar archivos, .md, etiquetas… (Ctrl+K)"
+            className="obsidian-search-input"
+            aria-label="Buscar archivos en la bóveda"
           />
           {searchQuery && (
             <button
               type="button"
-              className="keep-icon-btn"
+              className="keep-icon-btn-sm"
               onClick={() => setSearchQuery('')}
-              title="Limpiar búsqueda"
+              aria-label="Limpiar búsqueda"
             >
               ✕
             </button>
           )}
-        </div>
+        </search>
 
-        {/* Controles globales: Vista, Tema y Sesión */}
-        <div className="keep-topbar-actions">
-          <div className="keep-pill-group" role="group" aria-label="Modo de vista">
+        <div className="obsidian-topbar-actions">
+          <div className="obsidian-segmented" role="group" aria-label="Vista principal">
             <button
               type="button"
-              className={`keep-mini-pill ${viewMode === 'board' ? 'active' : ''}`}
-              onClick={() => setViewMode('board')}
+              className={`obsidian-seg-btn ${viewMode === 'vault' ? 'active' : ''}`}
+              onClick={() => setViewMode('vault')}
             >
-              🗂️ Tablero
+              📂 Bóveda
             </button>
             <button
               type="button"
-              className={`keep-mini-pill ${viewMode === 'graph' ? 'active' : ''}`}
+              className={`obsidian-seg-btn ${viewMode === 'graph' ? 'active' : ''}`}
               onClick={() => setViewMode('graph')}
             >
-              🕸️ Conexiones
+              🕸️ Grafo
             </button>
           </div>
 
           <button
             type="button"
+            className="keep-btn keep-btn-primary"
+            onClick={() => {
+              setNewNoteForm((f) => ({
+                ...f,
+                category: activeItem?.category || categoryLists[0]?.name || 'Anticitera',
+              }));
+              setNewNoteModalOpen(true);
+            }}
+          >
+            + Nuevo .md
+          </button>
+
+          <label
+            htmlFor="vault-quick-upload"
+            className="keep-btn keep-btn-soft obsidian-upload-btn"
+            title="Subir .md, .png, .pdf, .mp4, .svg…"
+          >
+            📎 Subir archivo
+            <input
+              ref={quickFileInputRef}
+              id="vault-quick-upload"
+              type="file"
+              className="keep-sr-only"
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (file) {
+                  handleUploadNewFile(
+                    file,
+                    activeItem?.category || 'Archivo & Notas'
+                  );
+                }
+                e.target.value = '';
+              }}
+            />
+          </label>
+
+          <button
+            type="button"
             className="keep-icon-btn"
             onClick={toggleColorScheme}
-            title={
-              renderedScheme === 'dark'
-                ? 'Cambiar a modo claro'
-                : 'Cambiar a modo oscuro'
-            }
-            aria-label={
-              renderedScheme === 'dark'
-                ? 'Cambiar a modo claro'
-                : 'Cambiar a modo oscuro'
-            }
+            title={renderedScheme === 'dark' ? 'Modo claro' : 'Modo oscuro'}
+            aria-label="Cambiar tema claro/oscuro"
           >
             {renderedScheme === 'dark' ? '☀️' : '🌙'}
           </button>
 
           {user ? (
-            <div className="keep-user-chip">
+            <button
+              type="button"
+              className="keep-user-pill"
+              onClick={logout}
+              title={`Conectado como ${user.email} · Cerrar sesión`}
+            >
               {user.photoURL ? (
-                <img
-                  src={user.photoURL}
-                  alt={user.displayName || 'Usuario'}
-                  className="keep-avatar"
-                />
+                <img src={user.photoURL} alt="" className="keep-avatar" />
               ) : (
-                <span className="keep-avatar-fallback">
-                  {(user.displayName || user.email || 'U')[0].toUpperCase()}
-                </span>
+                <span>👤</span>
               )}
               <span className="keep-user-name">
-                {user.displayName || user.email?.split('@')[0]}
+                {user.displayName?.split(' ')[0] || 'Salir'}
               </span>
-              <button
-                type="button"
-                onClick={logout}
-                className="keep-btn-ghost"
-              >
-                Salir
-              </button>
-            </div>
+            </button>
           ) : (
             <button
               type="button"
-              onClick={loginWithGoogle}
               className="keep-btn keep-btn-primary"
+              onClick={loginWithGoogle}
             >
               Entrar con Google
             </button>
@@ -790,1112 +805,806 @@ function LoveKeepApp() {
         </div>
       </header>
 
-      <main className="keep-main">
-        {/* ===================================================================
-            BARRA DE CAPTURA RÁPIDA (LINKS, PALABRAS Y FRASES)
-        =================================================================== */}
-        {user ? (
-          <DiscoveryForm
-            categories={categoryCards.map((c) => c.name)}
-            allItems={visibleItems}
-            user={user}
-            activeCategoryFilter={
-              selectedCategories.length === 1 ? selectedCategories[0] : 'All'
-            }
-          />
-        ) : (
-          <div className="keep-guest-banner">
-            <span>
-              Estás viendo el tablero público de <strong>love.deft.work</strong>. Inicia sesión para añadir links, palabras o frases, reordenar listas y crear conexiones.
-            </span>
+      {(uploadProgress !== null || uploadError) && (
+        <div className="obsidian-upload-banner" role="status" aria-live="polite">
+          {uploadProgress !== null && (
+            <div className="keep-upload-progress-row">
+              <span>Subiendo archivo…</span>
+              <progress
+                className="keep-upload-progress"
+                value={uploadProgress}
+                max={100}
+                aria-label="Progreso de subida"
+              />
+              <span>{uploadProgress}%</span>
+            </div>
+          )}
+          {uploadError && <span className="keep-file-error">{uploadError}</span>}
+        </div>
+      )}
+
+      {/* =================================================================
+          CUERPO PRINCIPAL: GRAFO GLOBAL O WORKSPACE OBSIDIAN DE 3 PANELES
+      ================================================================= */}
+      {viewMode === 'graph' ? (
+        <main className="obsidian-graph-stage">
+          <div className="obsidian-graph-header">
+            <div>
+              <h2>🕸️ Grafo de la Bóveda</h2>
+              <p>
+                Nodos de archivo (<code>.md</code>, multimedia, enlaces) y{' '}
+                <strong>Relaciones-Elemento</strong> conectadas por <code>[[WikiLinks]]</code>.
+              </p>
+            </div>
             <button
               type="button"
-              onClick={loginWithGoogle}
-              className="keep-btn keep-btn-tonal"
+              className="keep-btn keep-btn-soft"
+              onClick={() => setViewMode('vault')}
             >
-              Iniciar sesión
+              Volver al editor
             </button>
           </div>
-        )}
-
-        {/* ===================================================================
-            MAPA DE CONEXIONES (VISTA GRAFO OPCIONAL)
-        =================================================================== */}
-        {viewMode === 'graph' && (
           <ConnectionsGraph
             items={visibleItems}
             categoriesMap={categoriesDocs}
-            activeItemId={activeHighlightId}
-            onSelectItem={(it) => {
-              setFocusedItemId(it.id === focusedItemId ? '' : it.id);
-              setEditingItem(it);
-            }}
-            onSelectCategory={(catName) => {
-              setSelectedCategories([catName]);
-              setViewMode('board');
-            }}
+            activeItemId={activeItemId}
+            onSelectItem={(it) => openVaultItem(it)}
+            onSelectCategory={() => setViewMode('vault')}
           />
-        )}
-
-        {/* ===================================================================
-            NIVEL SUPERIOR: TARJETAS DE CATEGORÍA (LISTAS ORDENADAS)
-        =================================================================== */}
-        <section className="keep-section" aria-label="Tarjetas de Categoría">
-          <div className="keep-section-header">
-            <div className="keep-section-title-group">
-              <h2>1. Tarjetas de Categoría</h2>
-              <span className="keep-badge">
-                {categoryCards.length} listas · Arrastra para ordenar o pulsa para filtrar
-              </span>
-            </div>
-            <div className="keep-section-actions">
-              {selectedCategories.length > 0 && (
-                <button
-                  type="button"
-                  className="keep-mini-pill active"
-                  onClick={() => setSelectedCategories([])}
-                >
-                  ✕ Mostrar todas las categorías ({visibleItems.length})
-                </button>
-              )}
+        </main>
+      ) : (
+        <main className="obsidian-workspace">
+          {/* ---------------------------------------------------------------
+              PANEL IZQUIERDO: CATEGORÍAS COMO LISTAS DE ARCHIVOS (TODOS LOS TIPOS)
+          --------------------------------------------------------------- */}
+          <aside className="obsidian-sidebar" aria-label="Explorador de listas de archivos">
+            <div className="obsidian-sidebar-head">
+              <span className="obsidian-pane-title">📁 Listas por Categoría</span>
               {user && (
                 <button
                   type="button"
-                  className="keep-btn keep-btn-tonal"
+                  className="keep-icon-btn-sm"
                   onClick={() => setNewCategoryModalOpen(true)}
+                  title="Nueva categoría / lista"
                 >
-                  + Nueva Categoría
+                  + 📁
                 </button>
               )}
             </div>
-          </div>
 
-          <div className="keep-categories-grid">
-            {categoryCards.map((cat) => {
-              const isSelected = selectedCategories.includes(cat.name);
-              const previewItems = cat.items.slice(0, 4);
-
-              return (
-                <article
-                  key={cat.name}
-                  draggable={Boolean(user)}
-                  onDragStart={() =>
-                    setDragState({ kind: 'category', id: cat.name })
-                  }
-                  onDragOver={(e) => e.preventDefault()}
-                  onDrop={(e) => handleDropOnCategory(cat.name, e)}
-                  className={`keep-category-card keep-tone-${cat.colorKey} ${isSelected ? 'is-selected' : ''
-                    } ${cat.hasHighlightedItem ? 'is-related-glow' : ''}`}
-                  style={{ '--card-accent': cat.color.accent }}
+            <div className="obsidian-type-filter-bar" role="group" aria-label="Filtrar por tipo de archivo">
+              {[
+                { id: 'all', label: 'Todos' },
+                { id: 'markdown', label: '.md' },
+                { id: 'media', label: 'Media' },
+                { id: 'link', label: '.url' },
+                { id: 'relation', label: '🕸️ Rel.' },
+              ].map((t) => (
+                <button
+                  key={t.id}
+                  type="button"
+                  className={`obsidian-filter-chip ${fileKindFilter === t.id ? 'active' : ''}`}
+                  onClick={() => setFileKindFilter(t.id)}
                 >
-                  {/* Cabecera de la Tarjeta-Categoría */}
-                  <div
-                    className="keep-cat-card-header"
-                    onClick={(e) =>
-                      toggleCategorySelection(cat.name, e.metaKey || e.ctrlKey || e.shiftKey)
-                    }
+                  {t.label}
+                </button>
+              ))}
+            </div>
+
+            <div className="obsidian-tree-scroll">
+              {loading && <p className="obsidian-muted-msg">Cargando bóveda…</p>}
+              {!loading && categoryLists.length === 0 && (
+                <p className="obsidian-muted-msg">No hay archivos que coincidan.</p>
+              )}
+
+              {categoryLists.map((cat) => {
+                const isCollapsed = Boolean(collapsedCats[cat.name]);
+                return (
+                  <section
+                    key={cat.name}
+                    className="obsidian-folder-group"
+                    style={{ '--cat-accent': cat.accent }}
+                    onDragOver={(e) => e.preventDefault()}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      if (e.dataTransfer?.files?.length) {
+                        handleUploadNewFile(e.dataTransfer.files[0], cat.name);
+                        return;
+                      }
+                      if (dragItemId && user) {
+                        mutateItem(dragItemId, { category: cat.name });
+                        setDragItemId('');
+                      }
+                    }}
                   >
-                    <div className="keep-cat-title-row">
-                      <span className="keep-cat-icon">{cat.icon}</span>
-                      <h3 className="keep-cat-title">{cat.name}</h3>
-                      <span
-                        className="keep-privacy-dot"
-                        title={cat.isPublic ? 'Categoría pública' : 'Categoría privada'}
-                      >
-                        {cat.isPublic ? '🌍' : '🔒'}
-                      </span>
-                    </div>
-
-                    <div
-                      className="keep-cat-actions"
-                      onClick={(e) => e.stopPropagation()}
-                    >
-                      {user && (
-                        <button
-                          type="button"
-                          className={`keep-icon-btn ${cat.pinned ? 'is-active' : ''}`}
-                          onClick={() =>
-                            mutateCategory(cat.name, { pinned: !cat.pinned })
-                          }
-                          title={cat.pinned ? 'Desfijar categoría' : 'Fijar categoría arriba'}
-                        >
-                          📌
-                        </button>
-                      )}
+                    <div className="obsidian-folder-row">
                       <button
                         type="button"
-                        className="keep-icon-btn"
-                        onClick={() => setExpandedCategoryName(cat.name)}
-                        title="Abrir vista completa de lista"
-                      >
-                        ⤢
-                      </button>
-                      <button
-                        type="button"
-                        className="keep-icon-btn"
+                        className="obsidian-folder-toggle"
                         onClick={() =>
-                          setShareTarget({
-                            kind: 'category',
-                            name: cat.name,
-                            isPublic: cat.isPublic,
-                            sharedWith: cat.sharedWith,
-                            items: cat.items,
-                          })
-                        }
-                        title="Compartir esta categoría"
-                      >
-                        📤
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* Contadores por tipo */}
-                  <div className="keep-cat-counters">
-                    <span className="keep-cat-count-chip">
-                      Total: <strong>{cat.items.length}</strong>
-                    </span>
-                    {cat.linksCount > 0 && (
-                      <span className="keep-cat-count-chip">🔗 {cat.linksCount}</span>
-                    )}
-                    {cat.wordsCount > 0 && (
-                      <span className="keep-cat-count-chip">🏷️ {cat.wordsCount}</span>
-                    )}
-                    {cat.phrasesCount > 0 && (
-                      <span className="keep-cat-count-chip">💬 {cat.phrasesCount}</span>
-                    )}
-                  </div>
-
-                  {/* Lista compacta de elementos dentro de la Tarjeta-Categoría */}
-                  <ul className="keep-cat-preview-list">
-                    {previewItems.map((it) => {
-                      const isRel =
-                        activeHighlightId === it.id || highlightedRelatedIds.has(it.id);
-                      const relCount = relatedMap[it.id]?.size || 0;
-                      return (
-                        <li
-                          key={it.id}
-                          className={`keep-cat-preview-item ${it.checked ? 'is-checked' : ''
-                            } ${isRel ? 'is-highlighted' : ''}`}
-                          onMouseEnter={() => setHoveredItemId(it.id)}
-                          onMouseLeave={() => setHoveredItemId('')}
-                        >
-                          {user && (
-                            <input
-                              type="checkbox"
-                              checked={it.checked}
-                              onChange={() => handleToggleItemCheck(it)}
-                              className="keep-checkbox"
-                              title="Marcar como visto / completado"
-                            />
-                          )}
-                          <button
-                            type="button"
-                            className="keep-cat-item-main"
-                            onClick={() => handleItemAction(it)}
-                            title={
-                              it.type === 'link'
-                                ? `Abrir ${it.url}`
-                                : 'Clic para copiar texto'
-                            }
-                          >
-                            {it.type === 'link' && it.favicon ? (
-                              <img
-                                src={it.favicon}
-                                alt=""
-                                width="14"
-                                height="14"
-                                className="keep-favicon-sm"
-                              />
-                            ) : (
-                              <span className="keep-type-mini">
-                                {it.type === 'link'
-                                  ? '🔗'
-                                  : it.type === 'word'
-                                    ? '🏷️'
-                                    : '💬'}
-                              </span>
-                            )}
-                            <span className="keep-cat-item-text">{it.title}</span>
-                          </button>
-
-                          {relCount > 0 && (
-                            <button
-                              type="button"
-                              className="keep-rel-indicator"
-                              onClick={() =>
-                                setFocusedItemId(
-                                  focusedItemId === it.id ? '' : it.id
-                                )
-                              }
-                              title={`${relCount} conexión(es) con otras listas`}
-                            >
-                              ↔{relCount}
-                            </button>
-                          )}
-                        </li>
-                      );
-                    })}
-                    {cat.items.length === 0 && (
-                      <li className="keep-cat-empty-item">
-                        Lista vacía · Añade un link, palabra o frase abajo
-                      </li>
-                    )}
-                  </ul>
-
-                  {cat.items.length > 4 && (
-                    <button
-                      type="button"
-                      className="keep-cat-more-btn"
-                      onClick={() => setExpandedCategoryName(cat.name)}
-                    >
-                      Ver los {cat.items.length} elementos de «{cat.name}» →
-                    </button>
-                  )}
-
-                  {/* Input rápido directo dentro de la Tarjeta-Categoría */}
-                  {user && (
-                    <form
-                      onSubmit={(e) => handleQuickAddInCategory(cat.name, e)}
-                      className="keep-cat-quick-form"
-                    >
-                      <input
-                        type="text"
-                        placeholder={`+ Añadir a ${cat.name}…`}
-                        value={quickInlineByCat[cat.name] || ''}
-                        onChange={(e) =>
-                          setQuickInlineByCat((prev) => ({
+                          setCollapsedCats((prev) => ({
                             ...prev,
-                            [cat.name]: e.target.value,
+                            [cat.name]: !prev[cat.name],
                           }))
                         }
-                        className="keep-cat-quick-input"
-                      />
-                    </form>
-                  )}
-                </article>
-              );
-            })}
-          </div>
-        </section>
+                      >
+                        <span className="obsidian-chevron">
+                          {isCollapsed ? '▸' : '▾'}
+                        </span>
+                        <span>{cat.icon}</span>
+                        <span className="obsidian-folder-name">{cat.name}</span>
+                        <span className="obsidian-folder-count">{cat.files.length}</span>
+                      </button>
 
-        {/* ===================================================================
-            NIVEL INFERIOR: MURO DE MINI-TARJETAS Y BARRA DE ORDENACIÓN
-        =================================================================== */}
-        <section className="keep-section" aria-label="Muro de Mini-Tarjetas">
-          <div className="keep-wall-toolbar">
-            <div className="keep-section-title-group">
-              <h2>
-                2. Muro de Mini-Tarjetas{' '}
-                {selectedCategories.length > 0
-                  ? `(${selectedCategories.join(' + ')})`
-                  : '(Todas las listas)'}
-              </h2>
-              <span className="keep-badge">
-                {filteredWallItems.length} elementos cortos
-              </span>
-            </div>
-
-            {/* Filtros por Tipo (Link / Palabra / Frase) */}
-            <div className="keep-wall-controls">
-              <div className="keep-pill-group" role="group" aria-label="Filtrar por tipo">
-                {[
-                  { id: 'all', label: 'Todos' },
-                  { id: 'link', label: '🔗 Links' },
-                  { id: 'word', label: '🏷️ Palabras' },
-                  { id: 'phrase', label: '💬 Frases' },
-                ].map((t) => (
-                  <button
-                    key={t.id}
-                    type="button"
-                    className={`keep-mini-pill ${typeFilter === t.id ? 'active' : ''}`}
-                    onClick={() => setTypeFilter(t.id)}
-                  >
-                    {t.label}
-                  </button>
-                ))}
-              </div>
-
-              {/* Ordenación en 1 clic */}
-              <div className="keep-pill-group" role="group" aria-label="Ordenar por">
-                {[
-                  { id: 'smart', label: '↕ Manual / Pin' },
-                  { id: 'recent', label: '🕒 Recientes' },
-                  { id: 'alpha', label: '🔤 A–Z' },
-                  { id: 'clicks', label: '🔥 Más usados' },
-                ].map((s) => (
-                  <button
-                    key={s.id}
-                    type="button"
-                    className={`keep-mini-pill ${sortBy === s.id ? 'active' : ''}`}
-                    onClick={() => setSortBy(s.id)}
-                  >
-                    {s.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>
-
-          {loading ? (
-            <div className="keep-empty-state">Cargando elementos…</div>
-          ) : filteredWallItems.length === 0 ? (
-            <div className="keep-empty-state">
-              <p>No hay elementos que coincidan con el filtro actual.</p>
-            </div>
-          ) : (
-            <div className="keep-microcards-grid">
-              {filteredWallItems.map((it) => {
-                const color = getColorConfig(
-                  categoriesDocs[it.category]?.colorKey || it.colorKey || it.category
-                );
-                const siblingIds = Array.from(relatedMap[it.id] || []);
-                const siblingItems = siblingIds
-                  .map((id) => itemsById[id])
-                  .filter(Boolean);
-                const isFocusedOrHovered = activeHighlightId === it.id;
-                const isRelatedToActive = highlightedRelatedIds.has(it.id);
-
-                return (
-                  <article
-                    key={it.id}
-                    draggable={Boolean(user)}
-                    onDragStart={() => setDragState({ kind: 'item', id: it.id })}
-                    onDragOver={(e) => e.preventDefault()}
-                    onDrop={(e) => handleDropOnItem(it, e)}
-                    onMouseEnter={() => setHoveredItemId(it.id)}
-                    onMouseLeave={() => setHoveredItemId('')}
-                    className={`keep-microcard keep-type-${it.type} keep-tone-${color.key
-                      } ${it.pinned ? 'is-pinned' : ''} ${it.checked ? 'is-checked' : ''
-                      } ${isFocusedOrHovered ? 'is-focused' : ''} ${isRelatedToActive ? 'is-related-glow' : ''
-                      }`}
-                    style={{ '--card-accent': color.accent }}
-                  >
-                    {/* Fila superior de la Mini-Tarjeta: Categoría + Acciones rápidas */}
-                    <div className="keep-micro-top">
-                      <div className="keep-micro-tags">
-                        <button
-                          type="button"
-                          className="keep-micro-cat-chip"
-                          onClick={() => toggleCategorySelection(it.category)}
-                          title={`Filtrar por ${it.category}`}
-                        >
-                          {getCategoryIcon(it.category)} {it.category}
-                        </button>
-                        {(it.extraCategories || []).map((xCat) => (
-                          <button
-                            key={xCat}
-                            type="button"
-                            className="keep-micro-cat-chip is-secondary"
-                            onClick={() => toggleCategorySelection(xCat)}
-                            title={`También en ${xCat}`}
-                          >
-                            +{xCat}
-                          </button>
-                        ))}
-                        {!it.isPublic && (
-                          <span className="keep-lock-tag" title="Elemento privado">
-                            🔒
-                          </span>
-                        )}
-                      </div>
-
-                      <div className="keep-micro-actions">
-                        {user && (
-                          <input
-                            type="checkbox"
-                            checked={it.checked}
-                            onChange={() => handleToggleItemCheck(it)}
-                            className="keep-checkbox"
-                            title="Marcar como visto/completado"
-                          />
-                        )}
-                        {user && (
-                          <button
-                            type="button"
-                            className={`keep-icon-btn-sm ${it.pinned ? 'is-active' : ''}`}
-                            onClick={() => handleToggleItemPin(it)}
-                            title={it.pinned ? 'Quitar fijado' : 'Fijar arriba'}
-                          >
-                            ★
-                          </button>
-                        )}
+                      <div className="obsidian-folder-actions">
                         <button
                           type="button"
                           className="keep-icon-btn-sm"
-                          onClick={(e) => handleCopyItem(it, e)}
-                          title="Copiar en 1 clic"
+                          onClick={() => {
+                            setNewNoteForm((f) => ({ ...f, category: cat.name }));
+                            setNewNoteModalOpen(true);
+                          }}
+                          title={`Nuevo .md en ${cat.name}`}
                         >
-                          {copiedId === it.id ? '✓' : '📋'}
-                        </button>
-                        <button
-                          type="button"
-                          className="keep-icon-btn-sm"
-                          onClick={() => setEditingItem(it)}
-                          title="Editar o relacionar con elementos de otras listas"
-                        >
-                          🕸️
+                          +
                         </button>
                         <button
                           type="button"
                           className="keep-icon-btn-sm"
                           onClick={() =>
                             setShareTarget({
-                              kind: 'item',
-                              item: it,
-                              relatedItems: siblingItems,
+                              kind: 'category',
+                              name: cat.name,
+                              items: cat.files.map((f) => f.item),
+                              isPublic: cat.isPublic,
+                              sharedWith: cat.sharedWith,
                             })
                           }
-                          title="Compartir este elemento"
+                          title={`Compartir lista ${cat.name}`}
                         >
                           📤
                         </button>
-                        {user && (
-                          <button
-                            type="button"
-                            className="keep-icon-btn-sm is-danger"
-                            onClick={(e) => handleDeleteItem(it, e)}
-                            title="Eliminar elemento"
-                          >
-                            ✕
-                          </button>
-                        )}
                       </div>
                     </div>
 
-                    {/* Cuerpo principal adaptado según Tipo: Link, Palabra o Frase */}
-                    <div
-                      className="keep-micro-body"
-                      onClick={() => handleItemAction(it)}
-                      role="button"
-                      tabIndex={0}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') handleItemAction(it);
-                      }}
-                    >
-                      {it.type === 'link' ? (
-                        <div className="keep-link-row">
-                          {it.favicon ? (
-                            <img
-                              src={it.favicon}
-                              alt=""
-                              width="20"
-                              height="20"
-                              className="keep-favicon"
-                            />
-                          ) : (
-                            <span className="keep-link-fallback">🔗</span>
-                          )}
-                          <div className="keep-link-texts">
-                            <span className="keep-micro-title">{it.title}</span>
-                            {it.domain && (
-                              <span className="keep-domain-pill">
-                                {it.domain} ↗
-                              </span>
-                            )}
-                          </div>
-                        </div>
-                      ) : it.type === 'word' ? (
-                        <div className="keep-word-row">
-                          <span className="keep-word-chip">{it.title}</span>
-                        </div>
-                      ) : (
-                        <p className="keep-phrase-text">{it.title}</p>
-                      )}
-
-                      {it.note && (
-                        <p className="keep-micro-note">{it.note}</p>
-                      )}
-
-                      {it.attachment?.url && (
-                        <a
-                          href={it.attachment.url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          onClick={(e) => e.stopPropagation()}
-                          className="keep-micro-attachment"
-                          title={`Abrir fichero adjunto: ${it.attachment.name}`}
-                        >
-                          {AttachmentService.isImageAttachment(it.attachment) ? (
-                            <img
-                              src={it.attachment.url}
-                              alt={it.attachment.name}
-                              className="keep-micro-attachment-thumb"
-                              loading="lazy"
-                            />
-                          ) : (
-                            <span className="keep-micro-attachment-icon">
-                              {AttachmentService.getAttachmentIcon(
-                                it.attachment.contentType,
-                                it.attachment.name
-                              )}
-                            </span>
-                          )}
-                          <span className="keep-micro-attachment-name">
-                            {it.attachment.name}
-                          </span>
-                          <small className="keep-micro-attachment-size">
-                            {AttachmentService.formatFileSize(it.attachment.size)}
-                          </small>
-                        </a>
-                      )}
-                    </div>
-
-                    {/* Chips de Relaciones Cruzadas con elementos de otras listas */}
-                    {siblingItems.length > 0 && (
-                      <div className="keep-micro-relations">
-                        {siblingItems.map((rel) => (
-                          <button
-                            key={rel.id}
-                            type="button"
-                            className="keep-sibling-chip"
-                            onClick={() => {
-                              setFocusedItemId(
-                                focusedItemId === rel.id ? '' : rel.id
-                              );
-                              if (
-                                selectedCategories.length > 0 &&
-                                !selectedCategories.includes(rel.category)
-                              ) {
-                                setSelectedCategories((prev) => [
-                                  ...prev,
-                                  rel.category,
-                                ]);
-                              }
-                            }}
-                            title={`Conectado con «${rel.title}» en la lista ${rel.category}`}
-                          >
-                            ↔ {rel.title}{' '}
-                            <small>· {rel.category}</small>
-                          </button>
-                        ))}
-                      </div>
+                    {!isCollapsed && (
+                      <ul className="obsidian-file-list">
+                        {cat.files.map(({ item: it, isCrossRef }) => {
+                          const badge = getFileBadge(it);
+                          const isActive = it.id === activeItemId;
+                          return (
+                            <li key={`${cat.name}-${it.id}`}>
+                              <button
+                                type="button"
+                                draggable={Boolean(user)}
+                                onDragStart={() => setDragItemId(it.id)}
+                                onClick={() => openVaultItem(it)}
+                                className={`obsidian-file-row ${isActive ? 'is-active' : ''}`}
+                                title={getFileDisplayName(it)}
+                              >
+                                <span className="obsidian-file-icon">{badge.icon}</span>
+                                <span className="obsidian-file-name">
+                                  {getFileDisplayName(it)}
+                                </span>
+                                {isCrossRef && (
+                                  <span className="obsidian-file-tag" title="Referencia cruzada">
+                                    ↗
+                                  </span>
+                                )}
+                                {it.pinned && (
+                                  <span className="obsidian-file-tag" title="Fijado">
+                                    ★
+                                  </span>
+                                )}
+                              </button>
+                            </li>
+                          );
+                        })}
+                      </ul>
                     )}
-                  </article>
+                  </section>
                 );
               })}
             </div>
-          )}
-        </section>
-      </main>
+          </aside>
 
-      {/* ===================================================================
-          MODAL: COMPARTIR (A NIVEL DE CATEGORÍA O DE ELEMENTO)
-      =================================================================== */}
-      <ShareModal
-        open={Boolean(shareTarget)}
-        onClose={() => setShareTarget(null)}
-        target={shareTarget}
-        canEdit={Boolean(user)}
-        onUpdateSharing={async ({ isPublic, sharedWith }) => {
-          if (!shareTarget) return;
-          if (shareTarget.kind === 'category') {
-            await mutateCategory(shareTarget.name, { isPublic, sharedWith });
-            setShareTarget((prev) =>
-              prev ? { ...prev, isPublic, sharedWith } : null
-            );
-          } else if (shareTarget.kind === 'item') {
-            await mutateItem(shareTarget.item.id, { isPublic, sharedWith });
-            setShareTarget((prev) =>
-              prev
-                ? {
-                  ...prev,
-                  item: { ...prev.item, isPublic, sharedWith },
-                }
-                : null
-            );
-          }
-        }}
-      />
-
-      {/* ===================================================================
-          MODAL: VISTA EXPANDIDA DE UNA CATEGORÍA (CHECKLIST + ORDEN + COLOR)
-      =================================================================== */}
-      <LightDismissDialog
-        open={Boolean(expandedCategoryCard)}
-        onClose={() => setExpandedCategoryName('')}
-        title={
-          expandedCategoryCard
-            ? `${expandedCategoryCard.icon} ${expandedCategoryCard.name}`
-            : 'Categoría'
-        }
-        subtitle={
-          expandedCategoryCard
-            ? `${expandedCategoryCard.items.length} elementos en esta lista · Arrastra, marca o comparte`
-            : ''
-        }
-        maxWidth="660px"
-      >
-        {expandedCategoryCard && (
-          <div className="keep-expanded-cat-modal">
-            {user && (
-              <div className="keep-expanded-cat-settings">
-                <span className="keep-sub-label">Color de la tarjeta:</span>
-                <div className="keep-color-dots">
-                  {KEEP_COLORS.map((c) => (
-                    <button
-                      key={c.key}
-                      type="button"
-                      className={`keep-color-dot ${expandedCategoryCard.colorKey === c.key ? 'selected' : ''
-                        }`}
-                      style={{ backgroundColor: c.accent }}
-                      onClick={() =>
-                        mutateCategory(expandedCategoryCard.name, {
-                          colorKey: c.key,
-                        })
-                      }
-                      title={c.label}
-                    />
-                  ))}
-                </div>
-                <button
-                  type="button"
-                  className="keep-btn keep-btn-tonal"
-                  onClick={() => {
-                    const cat = expandedCategoryCard;
-                    setExpandedCategoryName('');
-                    setShareTarget({
-                      kind: 'category',
-                      name: cat.name,
-                      isPublic: cat.isPublic,
-                      sharedWith: cat.sharedWith,
-                      items: cat.items,
-                    });
-                  }}
-                >
-                  📤 Compartir lista
-                </button>
-              </div>
-            )}
-
-            {user && (
-              <form
-                onSubmit={(e) =>
-                  handleQuickAddInCategory(expandedCategoryCard.name, e)
-                }
-                className="share-url-row"
-              >
-                <input
-                  type="text"
-                  placeholder={`Añadir link, palabra o frase en ${expandedCategoryCard.name}…`}
-                  value={quickInlineByCat[expandedCategoryCard.name] || ''}
-                  onChange={(e) =>
-                    setQuickInlineByCat((prev) => ({
-                      ...prev,
-                      [expandedCategoryCard.name]: e.target.value,
-                    }))
-                  }
-                  className="keep-input"
-                />
-                <button type="submit" className="keep-btn keep-btn-primary">
-                  + Añadir
-                </button>
-              </form>
-            )}
-
-            <ul className="keep-expanded-items-list">
-              {expandedCategoryCard.items.map((it) => (
-                <li
-                  key={it.id}
-                  className={`keep-expanded-row ${it.checked ? 'is-checked' : ''
-                    }`}
-                >
-                  {user && (
-                    <input
-                      type="checkbox"
-                      checked={it.checked}
-                      onChange={() => handleToggleItemCheck(it)}
-                      className="keep-checkbox"
-                    />
-                  )}
-                  <div
-                    className="keep-expanded-row-main"
-                    onClick={() => handleItemAction(it)}
-                  >
-                    <strong>{it.title}</strong>
-                    {it.domain && (
-                      <span className="keep-domain-pill">{it.domain}</span>
-                    )}
-                    {it.note && <p className="keep-micro-note">{it.note}</p>}
-                  </div>
-                  <div className="keep-micro-actions">
-                    <button
-                      type="button"
-                      className="keep-icon-btn-sm"
-                      onClick={(e) => handleCopyItem(it, e)}
-                      title="Copiar"
-                    >
-                      📋
-                    </button>
-                    <button
-                      type="button"
-                      className="keep-icon-btn-sm"
-                      onClick={() => {
-                        setExpandedCategoryName('');
-                        setEditingItem(it);
-                      }}
-                      title="Relacionar / Editar"
-                    >
-                      🕸️
-                    </button>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
-      </LightDismissDialog>
-
-      {/* ===================================================================
-          MODAL: EDITAR MINI-TARJETA Y GESTIONAR CONEXIONES ENTRE LISTAS
-      =================================================================== */}
-      <LightDismissDialog
-        open={Boolean(editingItem)}
-        onClose={() => setEditingItem(null)}
-        title={editingItem ? `Editar y Conectar «${editingItem.title}»` : ''}
-        subtitle="Vincula este elemento con elementos de otras listas o añade referencias cruzadas"
-      >
-        {editingItem && (
-          <div className="share-modal-stack">
-            <div className="share-section">
-              <label className="share-label">Texto / Título corto</label>
-              <input
-                type="text"
-                value={editingItem.title}
-                disabled={!user}
-                onChange={(e) =>
-                  setEditingItem({ ...editingItem, title: e.target.value })
-                }
-                className="keep-input"
-              />
-            </div>
-
-            {editingItem.type === 'link' && (
-              <div className="share-section">
-                <label className="share-label">URL del enlace</label>
-                <input
-                  type="url"
-                  value={editingItem.url || ''}
-                  disabled={!user}
-                  onChange={(e) =>
-                    setEditingItem({
-                      ...editingItem,
-                      url: e.target.value,
-                      domain: EnrichmentService.extractDomain(e.target.value),
-                      favicon: EnrichmentService.getFaviconUrl(e.target.value),
-                    })
-                  }
-                  className="keep-input"
-                />
-              </div>
-            )}
-
-            <div className="share-section">
-              <label className="share-label">Nota breve o contexto (1 línea)</label>
-              <input
-                type="text"
-                value={editingItem.note || ''}
-                disabled={!user}
-                onChange={(e) =>
-                  setEditingItem({ ...editingItem, note: e.target.value })
-                }
-                className="keep-input"
-              />
-            </div>
-
-            <div className="share-section">
-              <label className="share-label" htmlFor="edit-item-file-input">
-                📎 Fichero adjunto (máx. 15 MB)
-              </label>
-              {editingItem.attachment?.url ? (
-                <div className="keep-edit-attachment-card">
-                  {AttachmentService.isImageAttachment(editingItem.attachment) ? (
-                    <a
-                      href={editingItem.attachment.url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="keep-edit-attachment-preview"
-                    >
-                      <img
-                        src={editingItem.attachment.url}
-                        alt={editingItem.attachment.name}
-                      />
-                    </a>
-                  ) : null}
-                  <div className="keep-edit-attachment-meta">
-                    <a
-                      href={editingItem.attachment.url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="keep-edit-attachment-link"
-                    >
-                      {AttachmentService.getAttachmentIcon(
-                        editingItem.attachment.contentType,
-                        editingItem.attachment.name
-                      )}{' '}
-                      {editingItem.attachment.name} (
-                      {AttachmentService.formatFileSize(editingItem.attachment.size)}) ↗
-                    </a>
-                    {user && (
-                      <div className="keep-edit-attachment-actions">
-                        <label
-                          htmlFor="edit-item-file-input"
-                          className="keep-btn keep-btn-soft"
-                        >
-                          Reemplazar fichero
-                        </label>
-                        <button
-                          type="button"
-                          className="keep-btn-ghost"
-                          onClick={async () => {
-                            const oldPath = editingItem.attachment?.storagePath;
-                            setEditingItem({ ...editingItem, attachment: null });
-                            if (oldPath) {
-                              await AttachmentService.deleteAttachment(oldPath);
-                            }
-                          }}
-                        >
-                          Quitar
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              ) : (
-                user && (
-                  <label
-                    htmlFor="edit-item-file-input"
-                    className="keep-btn keep-btn-soft keep-file-upload-label"
-                  >
-                    📎 Seleccionar fichero para adjuntar…
-                  </label>
-                )
-              )}
-              {user && (
-                <input
-                  id="edit-item-file-input"
-                  type="file"
-                  className="keep-sr-only"
-                  onChange={async (e) => {
-                    const file = e.target.files?.[0];
-                    if (!file) return;
-                    setEditFileError('');
-                    try {
-                      setEditUploadProgress(0);
-                      const prevPath = editingItem.attachment?.storagePath;
-                      const uploaded = await AttachmentService.uploadAttachment(
-                        file,
-                        user.uid,
-                        (pct) => setEditUploadProgress(pct)
-                      );
-                      setEditingItem((prev) =>
-                        prev ? { ...prev, attachment: uploaded } : prev
-                      );
-                      if (prevPath) {
-                        await AttachmentService.deleteAttachment(prevPath);
-                      }
-                    } catch (err) {
-                      setEditFileError(err?.message || 'Error al subir el fichero.');
-                    } finally {
-                      setEditUploadProgress(null);
-                      e.target.value = '';
-                    }
-                  }}
-                />
-              )}
-              {editUploadProgress !== null && (
-                <div className="keep-upload-progress-row" role="status" aria-live="polite">
-                  <progress
-                    className="keep-upload-progress"
-                    value={editUploadProgress}
-                    max={100}
-                    aria-label="Progreso de subida del fichero"
-                  />
-                  <span>{editUploadProgress}%</span>
-                </div>
-              )}
-              {editFileError && (
-                <span className="keep-file-error" role="status" aria-live="polite">
-                  {editFileError}
-                </span>
-              )}
-            </div>
-
-            <div className="share-section">
-              <label className="share-label">
-                Categoría principal y listas secundarias
-              </label>
-              <div className="keep-relations-chips">
-                {categoryCards.map((c) => {
-                  const isPrimary = editingItem.category === c.name;
-                  const isExtra = (editingItem.extraCategories || []).includes(
-                    c.name
-                  );
-                  return (
-                    <button
-                      key={c.name}
-                      type="button"
-                      disabled={!user}
-                      className={`keep-relation-chip ${isPrimary || isExtra ? 'active' : ''
-                        }`}
-                      onClick={() => {
-                        if (isPrimary) return;
-                        const nextExtra = isExtra
-                          ? (editingItem.extraCategories || []).filter(
-                            (x) => x !== c.name
-                          )
-                          : [...(editingItem.extraCategories || []), c.name];
-                        setEditingItem({
-                          ...editingItem,
-                          extraCategories: nextExtra,
-                        });
-                      }}
-                    >
-                      {c.icon} {c.name} {isPrimary ? '(Principal)' : isExtra ? '✓' : '+'}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-
-            <div className="share-section">
-              <label className="share-label">
-                🕸️ Elementos relacionados en otras listas (clic para enlazar/desenlazar)
-              </label>
-              <div className="keep-relations-chips">
-                {visibleItems
-                  .filter((cand) => cand.id !== editingItem.id)
-                  .slice(0, 24)
-                  .map((cand) => {
-                    const linked =
-                      (editingItem.relatedIds || []).includes(cand.id) ||
-                      (cand.relatedIds || []).includes(editingItem.id);
-                    return (
-                      <button
-                        key={cand.id}
-                        type="button"
-                        disabled={!user}
-                        className={`keep-relation-chip ${linked ? 'active' : ''}`}
-                        onClick={() => {
-                          const current = new Set(editingItem.relatedIds || []);
-                          if (current.has(cand.id)) {
-                            current.delete(cand.id);
-                          } else {
-                            current.add(cand.id);
-                          }
-                          setEditingItem({
-                            ...editingItem,
-                            relatedIds: Array.from(current),
-                          });
-                        }}
-                      >
-                        {linked ? '↔ ' : '+ '}
-                        {cand.title} <small>({cand.category})</small>
-                      </button>
-                    );
-                  })}
-              </div>
-            </div>
-
-            {user && (
-              <div className="share-actions-row">
+          {/* ---------------------------------------------------------------
+              PANEL CENTRAL: LECTOR / EDITOR MARKDOWN + VISOR MULTIMEDIA
+          --------------------------------------------------------------- */}
+          <section className="obsidian-editor-pane" aria-label="Visor y editor de archivo">
+            {!activeItem ? (
+              <div className="obsidian-empty-pane">
+                <p>Selecciona un archivo de las listas de la izquierda o crea un nuevo <code>.md</code>.</p>
                 <button
                   type="button"
                   className="keep-btn keep-btn-primary"
-                  onClick={async () => {
-                    await mutateItem(editingItem.id, {
-                      title: editingItem.title,
-                      name: editingItem.title,
-                      url: editingItem.url || '',
-                      domain: editingItem.domain || '',
-                      favicon: editingItem.favicon || '',
-                      note: editingItem.note || '',
-                      description: editingItem.note || '',
-                      attachment: editingItem.attachment || null,
-                      extraCategories: editingItem.extraCategories || [],
-                      relatedIds: editingItem.relatedIds || [],
-                    });
-                    setEditFileError('');
-                    setEditUploadProgress(null);
-                    setEditingItem(null);
-                  }}
+                  onClick={() => setNewNoteModalOpen(true)}
                 >
-                  Guardar cambios
+                  + Crear primer archivo .md
                 </button>
               </div>
-            )}
-          </div>
-        )}
-      </LightDismissDialog>
+            ) : (
+              <>
+                <div className="obsidian-doc-toolbar">
+                  <div className="obsidian-doc-breadcrumb">
+                    <span className="obsidian-crumb-cat">
+                      {getCategoryIcon(activeItem.category)} {activeItem.category}
+                    </span>
+                    <span aria-hidden="true">/</span>
+                    <span className="obsidian-crumb-file">
+                      {activeBadge?.icon} {getFileDisplayName(activeItem)}
+                    </span>
+                    {activeItem.kind === 'relation' && (
+                      <span className="obsidian-relation-pill">Relación-Elemento</span>
+                    )}
+                    {dirty && <span className="obsidian-dirty-dot">● Sin guardar</span>}
+                  </div>
 
-      {/* ===================================================================
-          MODAL: CREAR NUEVA CATEGORÍA
-      =================================================================== */}
+                  <div className="obsidian-doc-actions">
+                    <div className="obsidian-segmented" role="group" aria-label="Modo de vista">
+                      {[
+                        { id: 'read', label: '👁️ Lectura' },
+                        { id: 'split', label: '◫ Dividido' },
+                        { id: 'edit', label: '✏️ Editar' },
+                      ].map((m) => (
+                        <button
+                          key={m.id}
+                          type="button"
+                          className={`obsidian-seg-btn ${editorMode === m.id ? 'active' : ''}`}
+                          onClick={() => setEditorMode(m.id)}
+                        >
+                          {m.label}
+                        </button>
+                      ))}
+                    </div>
+
+                    {user && dirty && (
+                      <button
+                        type="button"
+                        className="keep-btn keep-btn-primary"
+                        onClick={handleSaveActiveDraft}
+                        disabled={savingDraft}
+                      >
+                        {savingDraft ? 'Guardando…' : '💾 Guardar'}
+                      </button>
+                    )}
+
+                    {user && (
+                      <button
+                        type="button"
+                        className={`keep-icon-btn ${activeItem.pinned ? 'is-active' : ''}`}
+                        onClick={() => mutateItem(activeItem.id, { pinned: !activeItem.pinned })}
+                        title={activeItem.pinned ? 'Quitar fijado' : 'Fijar archivo'}
+                      >
+                        ★
+                      </button>
+                    )}
+
+                    {user && (
+                      <button
+                        type="button"
+                        className="keep-icon-btn"
+                        onClick={() =>
+                          mutateItem(activeItem.id, { isPublic: !activeItem.isPublic })
+                        }
+                        title={activeItem.isPublic ? 'Público (clic para hacer privado)' : 'Privado (clic para hacer público)'}
+                      >
+                        {activeItem.isPublic ? '🌍' : '🔒'}
+                      </button>
+                    )}
+
+                    <button
+                      type="button"
+                      className="keep-icon-btn"
+                      onClick={() =>
+                        setShareTarget({
+                          kind: 'item',
+                          item: activeItem,
+                          relatedItems: activeConnections.outgoing.map((o) => o.item),
+                        })
+                      }
+                      title="Compartir archivo"
+                    >
+                      📤
+                    </button>
+
+                    {user && (
+                      <button
+                        type="button"
+                        className="keep-icon-btn is-danger"
+                        onClick={() => handleDeleteItem(activeItem)}
+                        title="Eliminar archivo"
+                      >
+                        ✕
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {/* Barra de fichero adjunto o URL externa del archivo activo */}
+                <div className="obsidian-media-bar">
+                  {activeItem.url && (
+                    <a
+                      href={activeItem.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="obsidian-media-chip"
+                    >
+                      {activeItem.favicon && (
+                        <img src={activeItem.favicon} alt="" width="16" height="16" />
+                      )}
+                      <span>{activeItem.domain || activeItem.url} ↗</span>
+                    </a>
+                  )}
+
+                  {activeItem.attachment?.url && (
+                    <a
+                      href={activeItem.attachment.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="obsidian-media-chip"
+                    >
+                      <span>
+                        {AttachmentService.getAttachmentIcon(
+                          activeItem.attachment.contentType,
+                          activeItem.attachment.name
+                        )}
+                      </span>
+                      <span>{activeItem.attachment.name}</span>
+                      <small>
+                        ({AttachmentService.formatFileSize(activeItem.attachment.size)}) ↗
+                      </small>
+                    </a>
+                  )}
+
+                  {user && (
+                    <label htmlFor="active-attach-input" className="obsidian-attach-btn">
+                      📎 {activeItem.attachment?.url ? 'Reemplazar fichero' : 'Adjuntar fichero'}
+                      <input
+                        ref={attachFileInputRef}
+                        id="active-attach-input"
+                        type="file"
+                        className="keep-sr-only"
+                        onChange={(e) => {
+                          const f = e.target.files?.[0];
+                          if (f) handleAttachToActiveItem(f);
+                          e.target.value = '';
+                        }}
+                      />
+                    </label>
+                  )}
+                </div>
+
+                {/* Previsualización multimedia nativa si el elemento tiene imagen/vídeo/audio/pdf */}
+                {activeItem.attachment?.url && (
+                  <div className="obsidian-media-stage">
+                    {AttachmentService.isImageAttachment(activeItem.attachment) && (
+                      <img
+                        src={activeItem.attachment.url}
+                        alt={activeItem.attachment.name}
+                        className="obsidian-stage-image"
+                      />
+                    )}
+                    {(activeItem.attachment.contentType?.startsWith('video/') ||
+                      /\.(mp4|webm|mov)$/i.test(activeItem.attachment.name)) && (
+                      <video
+                        src={activeItem.attachment.url}
+                        controls
+                        className="obsidian-stage-video"
+                      />
+                    )}
+                    {(activeItem.attachment.contentType?.startsWith('audio/') ||
+                      /\.(mp3|wav|ogg|m4a)$/i.test(activeItem.attachment.name)) && (
+                      <audio src={activeItem.attachment.url} controls />
+                    )}
+                    {(activeItem.attachment.contentType === 'application/pdf' ||
+                      activeItem.attachment.name.toLowerCase().endsWith('.pdf')) && (
+                      <iframe
+                        src={activeItem.attachment.url}
+                        title={activeItem.attachment.name}
+                        className="obsidian-stage-pdf"
+                      />
+                    )}
+                  </div>
+                )}
+
+                {/* Cuerpo Edit / Read / Split */}
+                <div className={`obsidian-panes mode-${editorMode}`}>
+                  {(editorMode === 'edit' || editorMode === 'split') && (
+                    <div className="obsidian-edit-col">
+                      <div className="obsidian-edit-fields">
+                        <input
+                          type="text"
+                          value={draftTitle}
+                          disabled={!user}
+                          onChange={(e) => {
+                            setDraftTitle(e.target.value);
+                            setDirty(true);
+                          }}
+                          placeholder="Nombre del archivo (sin extensión)…"
+                          className="obsidian-title-input"
+                        />
+                        <input
+                          type="url"
+                          value={draftUrl}
+                          disabled={!user}
+                          onChange={(e) => {
+                            setDraftUrl(e.target.value);
+                            setDirty(true);
+                          }}
+                          placeholder="URL asociada (opcional)…"
+                          className="obsidian-url-input"
+                        />
+                      </div>
+
+                      <div className="obsidian-textarea-wrap">
+                        <textarea
+                          ref={editorTextareaRef}
+                          value={draftMarkdown}
+                          disabled={!user}
+                          onChange={(e) => handleEditorChange(e.target.value)}
+                          onKeyDown={(e) => {
+                            if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+                              e.preventDefault();
+                              handleSaveActiveDraft();
+                            }
+                          }}
+                          placeholder="Escribe en Markdown. Usa [[Nombre]] para enlazar otro archivo o ![[archivo]] para incrustar multimedia…"
+                          className="obsidian-markdown-textarea"
+                        />
+
+                        {showWikiSuggest && wikiSuggestions.length > 0 && (
+                          <div className="obsidian-wikisuggest-popover">
+                            <div className="obsidian-wikisuggest-head">
+                              Enlazar archivo de la bóveda:
+                            </div>
+                            {wikiSuggestions.map((cand) => {
+                              const b = getFileBadge(cand);
+                              return (
+                                <div key={cand.id} className="obsidian-wikisuggest-item">
+                                  <button
+                                    type="button"
+                                    className="obsidian-wikisuggest-main"
+                                    onClick={() => insertWikiSuggestion(cand, false)}
+                                  >
+                                    <span>{b.icon}</span>
+                                    <span>{getFileDisplayName(cand)}</span>
+                                    <small>{cand.category}</small>
+                                  </button>
+                                  {cand.attachment?.url && (
+                                    <button
+                                      type="button"
+                                      className="obsidian-wikisuggest-embed"
+                                      onClick={() => insertWikiSuggestion(cand, true)}
+                                      title="Incrustar con ![[]]"
+                                    >
+                                      ![[]]
+                                    </button>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {(editorMode === 'read' || editorMode === 'split') && (
+                    <div className="obsidian-read-col">
+                      <MarkdownVaultView
+                        markdown={draftMarkdown}
+                        allItems={visibleItems}
+                        onOpenItem={(it) => openVaultItem(it)}
+                        onCreateMissingNote={(missingName) => {
+                          if (!user) return;
+                          createMarkdownFile({
+                            title: missingName,
+                            category: activeItem.category,
+                          });
+                        }}
+                      />
+                    </div>
+                  )}
+                </div>
+              </>
+            )}
+          </section>
+
+          {/* ---------------------------------------------------------------
+              PANEL DERECHO: CONEXIONES (SALIENTES, BACKLINKS Y RELACIONES-ELEMENTO)
+          --------------------------------------------------------------- */}
+          <aside className="obsidian-inspector" aria-label="Inspector de conexiones y backlinks">
+            {!activeItem ? (
+              <p className="obsidian-muted-msg">Sin archivo seleccionado.</p>
+            ) : (
+              <>
+                <div className="obsidian-inspector-section">
+                  <h3 className="obsidian-inspector-title">
+                    🕸️ Relaciones-Elemento ({activeConnections.relations.length})
+                  </h3>
+                  <p className="obsidian-inspector-hint">
+                    Crea un archivo <code>.md</code> que represente la relación entre este archivo y otro.
+                  </p>
+                  {activeConnections.relations.length > 0 && (
+                    <ul className="obsidian-conn-list">
+                      {activeConnections.relations.map((rel) => (
+                        <li key={rel.id}>
+                          <button
+                            type="button"
+                            className="obsidian-conn-btn"
+                            onClick={() => openVaultItem(rel)}
+                          >
+                            <span>🕸️</span>
+                            <span>{rel.title}</span>
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+
+                  {user && (
+                    <form onSubmit={handleCreateRelationElement} className="obsidian-rel-form">
+                      <select
+                        value={relTargetId}
+                        onChange={(e) => setRelTargetId(e.target.value)}
+                        className="keep-select-compact"
+                        aria-label="Archivo destino de la relación"
+                      >
+                        <option value="">Conectar con archivo…</option>
+                        {visibleItems
+                          .filter((it) => it.id !== activeItem.id)
+                          .map((it) => (
+                            <option key={it.id} value={it.id}>
+                              {getFileDisplayName(it)} ({it.category})
+                            </option>
+                          ))}
+                      </select>
+                      <input
+                        type="text"
+                        value={relLabel}
+                        onChange={(e) => setRelLabel(e.target.value)}
+                        placeholder="Tipo (ej. demuestra, inspira, refuta)"
+                        className="keep-input-compact"
+                      />
+                      <button
+                        type="submit"
+                        disabled={!relTargetId}
+                        className="keep-btn keep-btn-soft"
+                      >
+                        + Crear Relación .md
+                      </button>
+                    </form>
+                  )}
+                </div>
+
+                <div className="obsidian-inspector-section">
+                  <h3 className="obsidian-inspector-title">
+                    🔗 Enlaces salientes ({activeConnections.outgoing.length})
+                  </h3>
+                  {activeConnections.outgoing.length === 0 ? (
+                    <p className="obsidian-muted-msg">
+                      Usa <code>[[Nombre]]</code> en el Markdown para enlazar otros archivos.
+                    </p>
+                  ) : (
+                    <ul className="obsidian-conn-list">
+                      {activeConnections.outgoing.map(({ item: target, via }) => {
+                        const b = getFileBadge(target);
+                        return (
+                          <li key={target.id}>
+                            <button
+                              type="button"
+                              className="obsidian-conn-btn"
+                              onClick={() => openVaultItem(target)}
+                            >
+                              <span>{b.icon}</span>
+                              <span>{getFileDisplayName(target)}</span>
+                              <small>{via}</small>
+                            </button>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  )}
+                </div>
+
+                <div className="obsidian-inspector-section">
+                  <h3 className="obsidian-inspector-title">
+                    ↩️ Backlinks ({activeConnections.backlinks.length})
+                  </h3>
+                  {activeConnections.backlinks.length === 0 ? (
+                    <p className="obsidian-muted-msg">Ningún otro archivo enlaza a este todavía.</p>
+                  ) : (
+                    <ul className="obsidian-conn-list">
+                      {activeConnections.backlinks.map(({ item: src, snippet }) => {
+                        const b = getFileBadge(src);
+                        return (
+                          <li key={src.id}>
+                            <button
+                              type="button"
+                              className="obsidian-conn-btn is-backlink"
+                              onClick={() => openVaultItem(src)}
+                            >
+                              <div className="obsidian-backlink-head">
+                                <span>{b.icon}</span>
+                                <strong>{getFileDisplayName(src)}</strong>
+                              </div>
+                              {snippet && <p className="obsidian-backlink-snippet">{snippet}</p>}
+                            </button>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  )}
+                </div>
+              </>
+            )}
+          </aside>
+        </main>
+      )}
+
+      {/* =================================================================
+          MODAL: NUEVO ARCHIVO .MD
+      ================================================================= */}
       <LightDismissDialog
-        open={newCategoryModalOpen}
-        onClose={() => setNewCategoryModalOpen(false)}
-        title="Nueva Tarjeta de Categoría"
-        subtitle="Crea una nueva lista temática para tus links, palabras o frases"
+        open={newNoteModalOpen}
+        onClose={() => setNewNoteModalOpen(false)}
+        title="Nuevo archivo Markdown (.md)"
+        subtitle="Se añadirá a la lista de la categoría elegida"
       >
-        <form onSubmit={handleCreateNewCategory} className="share-modal-stack">
+        <form
+          onSubmit={async (e) => {
+            e.preventDefault();
+            if (!newNoteForm.title.trim()) return;
+            await createMarkdownFile(newNoteForm);
+            setNewNoteForm({
+              title: '',
+              category: newNoteForm.category,
+              url: '',
+              isPublic: true,
+            });
+            setNewNoteModalOpen(false);
+          }}
+          className="share-modal-stack"
+        >
           <div className="share-section">
-            <label className="share-label">Nombre de la categoría</label>
+            <label className="share-label">Nombre del archivo (.md)</label>
             <input
               type="text"
               required
-              placeholder="Ej. Cine Clásico, Prompts IA, Vinos Atlánticos…"
-              value={newCatForm.name}
-              onChange={(e) =>
-                setNewCatForm({ ...newCatForm, name: e.target.value })
-              }
+              value={newNoteForm.title}
+              onChange={(e) => setNewNoteForm({ ...newNoteForm, title: e.target.value })}
+              placeholder="Ej: arquitectura-conocimiento"
               className="keep-input"
             />
           </div>
-
           <div className="share-section">
-            <label className="share-label">Icono e identificador visual</label>
-            <div className="keep-relations-chips">
-              {['📌', '⚡', '🎬', '🍷', '🏎️', '📖', '🔤', '💡', '🎧', '🛠️', '🏛️', '🌍'].map(
-                (ic) => (
-                  <button
-                    key={ic}
-                    type="button"
-                    className={`keep-relation-chip ${newCatForm.icon === ic ? 'active' : ''
-                      }`}
-                    onClick={() => setNewCatForm({ ...newCatForm, icon: ic })}
-                  >
-                    {ic}
-                  </button>
-                )
-              )}
-            </div>
+            <label className="share-label">Categoría (lista destino)</label>
+            <input
+              type="text"
+              value={newNoteForm.category}
+              onChange={(e) => setNewNoteForm({ ...newNoteForm, category: e.target.value })}
+              className="keep-input"
+              list="vault-cat-options"
+            />
+            <datalist id="vault-cat-options">
+              {categoryLists.map((c) => (
+                <option key={c.name} value={c.name} />
+              ))}
+            </datalist>
           </div>
-
           <div className="share-section">
-            <label className="share-label">Color de la tarjeta</label>
+            <label className="share-label">URL externa asociada (opcional)</label>
+            <input
+              type="url"
+              value={newNoteForm.url}
+              onChange={(e) => setNewNoteForm({ ...newNoteForm, url: e.target.value })}
+              placeholder="https://…"
+              className="keep-input"
+            />
+          </div>
+          <div className="share-actions-row">
+            <button type="submit" className="keep-btn keep-btn-primary">
+              Crear archivo .md
+            </button>
+          </div>
+        </form>
+      </LightDismissDialog>
+
+      {/* =================================================================
+          MODAL: CREAR NUEVA CATEGORÍA
+      ================================================================= */}
+      <LightDismissDialog
+        open={newCategoryModalOpen}
+        onClose={() => setNewCategoryModalOpen(false)}
+        title="Nueva Lista / Categoría"
+        subtitle="Organiza tus archivos .md, imágenes, PDFs y vídeos"
+      >
+        <form
+          onSubmit={async (e) => {
+            e.preventDefault();
+            if (!newCatForm.name.trim()) return;
+            await mutateCategory(newCatForm.name.trim(), {
+              icon: newCatForm.icon || '📁',
+              colorKey: newCatForm.colorKey,
+              note: newCatForm.note.trim(),
+              isPublic: newCatForm.isPublic,
+              order: Date.now(),
+            });
+            setNewCatForm({
+              name: '',
+              icon: '📁',
+              colorKey: 'emerald',
+              note: '',
+              isPublic: true,
+            });
+            setNewCategoryModalOpen(false);
+          }}
+          className="share-modal-stack"
+        >
+          <div className="share-section">
+            <label className="share-label">Nombre de la lista</label>
+            <input
+              type="text"
+              required
+              value={newCatForm.name}
+              onChange={(e) => setNewCatForm({ ...newCatForm, name: e.target.value })}
+              placeholder="Ej: Proyectos, Fuentes PDF, Ideas…"
+              className="keep-input"
+            />
+          </div>
+          <div className="share-section">
+            <label className="share-label">Icono</label>
+            <input
+              type="text"
+              value={newCatForm.icon}
+              onChange={(e) => setNewCatForm({ ...newCatForm, icon: e.target.value })}
+              className="keep-input"
+              maxLength={4}
+            />
+          </div>
+          <div className="share-section">
+            <label className="share-label">Color</label>
             <div className="keep-color-dots">
               {KEEP_COLORS.map((c) => (
                 <button
                   key={c.key}
                   type="button"
-                  className={`keep-color-dot ${newCatForm.colorKey === c.key ? 'selected' : ''
-                    }`}
+                  className={`keep-color-dot ${newCatForm.colorKey === c.key ? 'selected' : ''}`}
                   style={{ backgroundColor: c.accent }}
-                  onClick={() =>
-                    setNewCatForm({ ...newCatForm, colorKey: c.key })
-                  }
+                  onClick={() => setNewCatForm({ ...newCatForm, colorKey: c.key })}
                   title={c.label}
                 />
               ))}
             </div>
           </div>
-
           <div className="share-actions-row">
             <button type="submit" className="keep-btn keep-btn-primary">
-              Crear Categoría
+              Crear lista
             </button>
           </div>
         </form>
       </LightDismissDialog>
+
+      {/* =================================================================
+          MODAL: COMPARTIR CATEGORÍA O ARCHIVO
+      ================================================================= */}
+      <ShareModal
+        open={Boolean(shareTarget)}
+        onClose={() => setShareTarget(null)}
+        target={shareTarget}
+        user={user}
+        onUpdateCategoryShare={async (catName, patch) => {
+          await mutateCategory(catName, patch);
+          setShareTarget((prev) => (prev ? { ...prev, ...patch } : prev));
+        }}
+        onUpdateItemShare={async (itemId, patch) => {
+          await mutateItem(itemId, patch);
+          setShareTarget((prev) =>
+            prev?.item ? { ...prev, item: { ...prev.item, ...patch } } : prev
+          );
+        }}
+      />
     </div>
   );
 }
@@ -1903,7 +1612,7 @@ function LoveKeepApp() {
 export default function App() {
   return (
     <AuthProvider>
-      <LoveKeepApp />
+      <ObsidianVaultBoard />
     </AuthProvider>
   );
 }

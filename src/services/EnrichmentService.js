@@ -216,6 +216,11 @@ export function normalizeDiscoveryDoc(raw) {
     relevance_score: typeof raw.relevance_score === 'number' ? raw.relevance_score : 75,
     colorKey: raw.colorKey || '',
     attachment: raw.attachment || null,
+    markdownContent: typeof raw.markdownContent === 'string' ? raw.markdownContent : '',
+    kind: raw.kind || 'file', // 'file' | 'relation'
+    sourceId: raw.sourceId || '',
+    targetId: raw.targetId || '',
+    relationLabel: raw.relationLabel || '',
     isPublic: raw.isPublic !== undefined ? Boolean(raw.isPublic) : true,
     sharedWith: Array.isArray(raw.sharedWith) ? raw.sharedWith : [],
     ownerUid: raw.ownerUid || '',
