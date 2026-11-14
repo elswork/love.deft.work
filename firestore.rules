@@ -1,23 +1,642 @@
 rules_version = '2';
+
+// ===============================================================
+// Assumed Data Model (Shared free-deft-work Firestore Database)
+// - love.deft.work: discoveries, categories, users
+// - union.deft.work: unions (and 11 subcollections), public_tokens
+// ===============================================================
+//
+// Collection: discoveries/{discoveryId} (love.deft.work)
+// Stores micro-items (links, words, phrases) and legacy discovery cards.
+// Fields:
+//   - title / name: string (required/optional depending on legacy vs new item)
+//   - type: string ('link' | 'word' | 'phrase' | legacy)
+//   - content / url / description: string (optional)
+//   - categoryId / category: string (optional)
+//   - color: string (optional)
+//   - pinned: bool (optional)
+//   - order: number (optional)
+//   - isPublic: bool (optional, defaults to true for legacy items)
+//   - ownerUid: string (optional for legacy items, uid of creator)
+//   - ownerEmail: string (optional)
+//   - sharedWith: list of email strings (optional)
+//   - createdAt / updatedAt: timestamp (optional)
+//
+// Collection: categories/{categoryId} (love.deft.work)
+// Stores top-level Category Cards (Google Keep-style containers).
+// Fields:
+//   - name: string (required)
+//   - icon / description: string (optional)
+//   - color: string (optional)
+//   - pinned: bool (optional)
+//   - order: number (optional)
+//   - isPublic: bool (optional)
+//   - ownerUid: string (optional)
+//   - ownerEmail: string (optional)
+//   - sharedWith: list of email strings (optional)
+//   - createdAt / updatedAt: timestamp (optional)
+//
+// Collection: users/{userId} (love.deft.work)
+// Stores user profile information and rank.
+// Fields:
+//   - uid: string
+//   - email: string
+//   - displayName: string
+//   - photoURL: string
+//   - rank: string ('maestro' | 'ciudadano')
+//   - createdAt / updatedAt: timestamp
+//
+// Collection: unions/{unionSlug} (union.deft.work - LOLS 11/1985 & RD 416/2015)
+// Document ID: URL-safe slug (^[a-z0-9-]{3,64}$)
+// Subcollections:
+//   - posts/{postId}
+//   - members/{memberId}
+//   - minutes/{minuteId}
+//   - ledger/{entryId}
+//   - assemblies/{assemblyId} (with voter_receipts/{voterUid} and ballots/{ballotId})
+//   - consultations/{ticketId}
+//   - vault_documents/{docId}
+//   - hour_credits/{recordId}
+//   - collective_clauses/{clauseId}
+//   - pulse_surveys/{surveyId}
+//   - whistleblower_reports/{trackingHash}
+//
+// Collection: public_tokens/{tokenHash} (union.deft.work)
+//   - Written and read exclusively by Admin SDK (issueMemberCardToken / verifyPublicToken).
+//
+// ===============================================================
+
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Permisos por defecto: Lectura pública, Escritura autenticada
-    match /{document=**} {
-      allow read: if true;
-      allow write: if request.auth != null;
+
+    // ===============================================================
+    // Helper Functions (love.deft.work)
+    // ===============================================================
+
+    function isAuthenticated() {
+      return request.auth != null;
     }
-    
-    // Reglas específicas para descubrimientos
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isAdminEmail() {
+      return isAuthenticated() && request.auth.token.get('email', '') == 'elswork@gmail.com';
+    }
+
+    function canReadSharedDoc() {
+      return (!('isPublic' in resource.data) || resource.data.isPublic == true) ||
+        (isAuthenticated() && (
+          resource.data.get('ownerUid', '') == request.auth.uid ||
+          resource.data.get('ownerEmail', '') == request.auth.token.get('email', '') ||
+          request.auth.token.get('email', '') in resource.data.get('sharedWith', []) ||
+          isAdminEmail()
+        ));
+    }
+
+    function canModifySharedDoc() {
+      return isAuthenticated() && (
+        !('ownerUid' in resource.data) ||
+        resource.data.ownerUid == '' ||
+        resource.data.ownerUid == request.auth.uid ||
+        request.auth.token.get('email', '') in resource.data.get('sharedWith', []) ||
+        isAdminEmail()
+      );
+    }
+
+    // ===============================================================
+    // Helper Functions & Domain Validators (union.deft.work)
+    // ===============================================================
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function unionExists(unionSlug) {
+      return exists(/databases/$(database)/documents/unions/$(unionSlug));
+    }
+
+    function unionDoc(unionSlug) {
+      return get(/databases/$(database)/documents/unions/$(unionSlug));
+    }
+
+    function isActiveMember(unionSlug) {
+      return isSignedIn() && unionExists(unionSlug) &&
+        exists(/databases/$(database)/documents/unions/$(unionSlug)/members/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/unions/$(unionSlug)/members/$(request.auth.uid)).data.status == 'activo';
+    }
+
+    function isExecutiveMember(unionSlug) {
+      return isSignedIn() && unionExists(unionSlug) && (
+        (
+          'executiveUids' in unionDoc(unionSlug).data &&
+          unionDoc(unionSlug).data.executiveUids is list &&
+          request.auth.uid in unionDoc(unionSlug).data.executiveUids
+        ) ||
+        (
+          isActiveMember(unionSlug) &&
+          get(/databases/$(database)/documents/unions/$(unionSlug)/members/$(request.auth.uid)).data.role in ['secretaria_general', 'organizacion', 'tesoreria', 'ejecutiva']
+        )
+      );
+    }
+
+    function isAffiliatedMember(unionSlug) {
+      return isSignedIn() && unionExists(unionSlug) && (
+        isExecutiveMember(unionSlug) ||
+        isActiveMember(unionSlug)
+      );
+    }
+
+    function hasRequiredFields(data, fields) {
+      return data.keys().hasAll(fields);
+    }
+
+    function hasOnlyAllowedFields(data, fields) {
+      return data.keys().hasOnly(fields);
+    }
+
+    function isValidString(val, minLen, maxLen) {
+      return val is string && val.size() >= minLen && val.size() <= maxLen;
+    }
+
+    function isValidOptionalString(data, field, minLen, maxLen) {
+      return !(field in data) || isValidString(data[field], minLen, maxLen);
+    }
+
+    function isValidOptionalBool(data, field) {
+      return !(field in data) || data[field] is bool;
+    }
+
+    function isValidOptionalTimestamp(data, field) {
+      return !(field in data) || data[field] is timestamp;
+    }
+
+    function isValidSha256Hex(val) {
+      return val is string && val.matches('^[a-fA-F0-9]{64}$');
+    }
+
+    function isValidWhistleblowerKeyBundle(bundle) {
+      return bundle is map &&
+             bundle.keys().hasAll(['publicKeyB64', 'wrappedPrivateKeyB64', 'saltB64']) &&
+             bundle.keys().hasOnly(['publicKeyB64', 'wrappedPrivateKeyB64', 'saltB64']) &&
+             isValidString(bundle.publicKeyB64, 16, 4096) &&
+             isValidString(bundle.wrappedPrivateKeyB64, 16, 4096) &&
+             isValidString(bundle.saltB64, 8, 512);
+    }
+
+    function areImmutableFieldsUnchanged(fields) {
+      return !request.resource.data.diff(resource.data).affectedKeys().hasAny(fields);
+    }
+
+    function isValidUnion(data, unionSlug) {
+      return hasRequiredFields(data, ['slug', 'name', 'promoters', 'executiveUids']) &&
+             hasOnlyAllowedFields(data, [
+               'slug', 'name', 'acronym', 'figureType', 'companyName', 'sector',
+               'multiRegion', 'autonomousCommunity', 'competentAuthority',
+               'domicile', 'monthlyFee', 'promoters', 'statutes',
+               'brandPrimaryHex', 'workforceEstimate', 'whistleblowerKeyBundle',
+               'executiveUids', 'legalStatus', 'nif', 'createdAt', 'updatedAt'
+             ]) &&
+             unionSlug.matches('^[a-z0-9-]{3,64}$') &&
+             data.slug is string && data.slug == unionSlug &&
+             isValidString(data.name, 4, 200) &&
+             data.promoters is list && data.promoters.size() >= 3 && data.promoters.size() <= 50 &&
+             data.executiveUids is list && data.executiveUids.size() >= 1 && data.executiveUids.size() <= 20 &&
+             isValidOptionalString(data, 'acronym', 1, 30) &&
+             isValidOptionalString(data, 'figureType', 1, 50) &&
+             isValidOptionalString(data, 'companyName', 0, 200) &&
+             isValidOptionalString(data, 'sector', 0, 200) &&
+             isValidOptionalBool(data, 'multiRegion') &&
+             isValidOptionalString(data, 'autonomousCommunity', 0, 100) &&
+             isValidOptionalString(data, 'competentAuthority', 0, 300) &&
+             isValidOptionalString(data, 'domicile', 0, 300) &&
+             (!('monthlyFee' in data) || (data.monthlyFee is number && data.monthlyFee >= 0 && data.monthlyFee <= 10000)) &&
+             (!('statutes' in data) || (data.statutes is map && data.statutes.size() <= 20)) &&
+             (!('brandPrimaryHex' in data) || (data.brandPrimaryHex is string && data.brandPrimaryHex.matches('^#[0-9a-fA-F]{6,8}$'))) &&
+             (!('workforceEstimate' in data) || (data.workforceEstimate is int && data.workforceEstimate >= 0 && data.workforceEstimate <= 10000000)) &&
+             (!('whistleblowerKeyBundle' in data) || isValidWhistleblowerKeyBundle(data.whistleblowerKeyBundle)) &&
+             isValidOptionalString(data, 'legalStatus', 1, 100) &&
+             isValidOptionalString(data, 'nif', 0, 40) &&
+             isValidOptionalTimestamp(data, 'createdAt') &&
+             isValidOptionalTimestamp(data, 'updatedAt');
+    }
+
+    function isValidPost(data) {
+      return hasRequiredFields(data, ['title', 'category', 'summary', 'body', 'authorRole', 'createdAt', 'isPublic']) &&
+             hasOnlyAllowedFields(data, [
+               'id', 'title', 'category', 'summary', 'body', 'authorRole',
+               'createdAt', 'isPublic', 'isPinned', 'authorUid'
+             ]) &&
+             isValidString(data.title, 1, 200) &&
+             isValidString(data.category, 1, 100) &&
+             isValidString(data.summary, 0, 1000) &&
+             isValidString(data.body, 1, 20000) &&
+             isValidString(data.authorRole, 1, 100) &&
+             data.createdAt is timestamp &&
+             data.isPublic is bool &&
+             isValidOptionalBool(data, 'isPinned') &&
+             isValidOptionalString(data, 'id', 1, 100) &&
+             isValidOptionalString(data, 'authorUid', 0, 128);
+    }
+
+    function isValidMember(data) {
+      return hasRequiredFields(data, ['fullName', 'dniNieMasked', 'workplaceCenter', 'jobCategory', 'role', 'status', 'feeUpToDate', 'joinedAt']) &&
+             hasOnlyAllowedFields(data, [
+               'id', 'memberNumber', 'fullName', 'dniNieMasked', 'workplaceCenter',
+               'jobCategory', 'role', 'status', 'feeUpToDate', 'joinedAt', 'email',
+               'cardToken', 'cardTokenHash'
+             ]) &&
+             isValidString(data.fullName, 2, 150) &&
+             isValidString(data.dniNieMasked, 3, 30) &&
+             isValidString(data.workplaceCenter, 1, 150) &&
+             isValidString(data.jobCategory, 1, 150) &&
+             isValidString(data.role, 1, 80) &&
+             data.status in ['pendiente', 'activo', 'suspendido', 'baja'] &&
+             data.feeUpToDate is bool &&
+             data.joinedAt is timestamp &&
+             isValidOptionalString(data, 'id', 1, 128) &&
+             isValidOptionalString(data, 'memberNumber', 1, 50) &&
+             isValidOptionalString(data, 'email', 3, 150) &&
+             isValidOptionalString(data, 'cardToken', 8, 128) &&
+             (!('cardTokenHash' in data) || isValidSha256Hex(data.cardTokenHash));
+    }
+
+    function isValidMinute(data) {
+      return hasRequiredFields(data, ['code', 'sessionType', 'title', 'date', 'attendeesCount', 'summary', 'agreements', 'signedBy']) &&
+             hasOnlyAllowedFields(data, [
+               'id', 'code', 'sessionType', 'title', 'date',
+               'attendeesCount', 'summary', 'agreements', 'signedBy'
+             ]) &&
+             isValidString(data.code, 1, 50) &&
+             isValidString(data.sessionType, 1, 100) &&
+             isValidString(data.title, 1, 250) &&
+             data.date is timestamp &&
+             data.attendeesCount is int && data.attendeesCount >= 0 && data.attendeesCount <= 100000 &&
+             isValidString(data.summary, 1, 10000) &&
+             data.agreements is list && data.agreements.size() <= 100 &&
+             isValidString(data.signedBy, 1, 500) &&
+             isValidOptionalString(data, 'id', 1, 100);
+    }
+
+    function isValidLedgerEntry(data) {
+      return hasRequiredFields(data, ['date', 'concept', 'category', 'amountEuros', 'isIncome', 'reference']) &&
+             hasOnlyAllowedFields(data, [
+               'id', 'date', 'concept', 'category', 'amountEuros', 'isIncome', 'reference'
+             ]) &&
+             data.date is timestamp &&
+             isValidString(data.concept, 1, 300) &&
+             isValidString(data.category, 1, 100) &&
+             data.amountEuros is number && data.amountEuros >= 0 && data.amountEuros <= 10000000 &&
+             data.isIncome is bool &&
+             isValidString(data.reference, 1, 100) &&
+             isValidOptionalString(data, 'id', 1, 100);
+    }
+
+    function isValidAssembly(data) {
+      return hasRequiredFields(data, ['title', 'description', 'scheduledAt', 'outsideWorkingHoursNote', 'status', 'options']) &&
+             hasOnlyAllowedFields(data, [
+               'id', 'title', 'description', 'scheduledAt', 'outsideWorkingHoursNote',
+               'status', 'isOpen', 'options', 'tallies', 'totalVotes', 'chainHeadHash', 'createdAt'
+             ]) &&
+             isValidString(data.title, 1, 250) &&
+             isValidString(data.description, 1, 5000) &&
+             data.scheduledAt is timestamp &&
+             isValidString(data.outsideWorkingHoursNote, 1, 500) &&
+             data.status in ['programada', 'abierta', 'cerrada'] &&
+             data.options is list && data.options.size() >= 2 && data.options.size() <= 20 &&
+             isValidOptionalBool(data, 'isOpen') &&
+             (!('tallies' in data) || (data.tallies is map && data.tallies.size() <= 20)) &&
+             (!('totalVotes' in data) || (data.totalVotes is int && data.totalVotes >= 0)) &&
+             isValidOptionalString(data, 'chainHeadHash', 1, 128) &&
+             isValidOptionalTimestamp(data, 'createdAt') &&
+             isValidOptionalString(data, 'id', 1, 100);
+    }
+
+    function isValidConsultation(data) {
+      return hasRequiredFields(data, ['title', 'category', 'description', 'authorUid', 'isPublicCommitteeUpdate', 'createdAt', 'status']) &&
+             hasOnlyAllowedFields(data, [
+               'id', 'title', 'category', 'description', 'workplaceCenter',
+               'authorUid', 'isConfidential', 'isPublicCommitteeUpdate',
+               'status', 'unionResponse', 'isWorksCouncilCommunication', 'createdAt'
+             ]) &&
+             isValidString(data.title, 3, 200) &&
+             isValidString(data.category, 2, 100) &&
+             isValidString(data.description, 5, 5000) &&
+             isValidString(data.authorUid, 1, 128) &&
+             data.isPublicCommitteeUpdate is bool &&
+             data.createdAt is timestamp &&
+             data.status in ['pendiente', 'en_tramite', 'en_analisis', 'resuelta', 'cerrada'] &&
+             isValidOptionalString(data, 'id', 1, 100) &&
+             isValidOptionalString(data, 'workplaceCenter', 0, 150) &&
+             isValidOptionalBool(data, 'isConfidential') &&
+             isValidOptionalString(data, 'unionResponse', 0, 5000) &&
+             isValidOptionalBool(data, 'isWorksCouncilCommunication');
+    }
+
+    function isValidVaultDocument(data) {
+      return hasRequiredFields(data, [
+               'id', 'title', 'category', 'visibility', 'fileName', 'contentType',
+               'sizeBytes', 'sha256Digest', 'storagePath', 'downloadUrl', 'uploadedBy', 'uploadedAt', 'notes'
+             ]) &&
+             hasOnlyAllowedFields(data, [
+               'id', 'title', 'category', 'visibility', 'fileName', 'contentType',
+               'sizeBytes', 'sha256Digest', 'storagePath', 'downloadUrl', 'uploadedBy', 'uploadedAt', 'notes'
+             ]) &&
+             isValidString(data.id, 1, 100) &&
+             isValidString(data.title, 1, 200) &&
+             isValidString(data.category, 1, 100) &&
+             data.visibility in ['publicBoard', 'affiliatesOnly', 'executiveOnly'] &&
+             isValidString(data.fileName, 1, 255) &&
+             isValidString(data.contentType, 1, 128) &&
+             data.sizeBytes is int && data.sizeBytes >= 0 && data.sizeBytes <= 104857600 &&
+             isValidSha256Hex(data.sha256Digest) &&
+             isValidString(data.storagePath, 1, 512) &&
+             isValidString(data.downloadUrl, 0, 2048) &&
+             isValidString(data.uploadedBy, 1, 150) &&
+             data.uploadedAt is timestamp &&
+             isValidString(data.notes, 0, 5000);
+    }
+
+    function isValidHourCredit(data) {
+      return hasRequiredFields(data, [
+               'id', 'delegateName', 'delegateRole', 'workplaceCenter',
+               'monthlyQuotaHours', 'usedHours', 'reason', 'date', 'status'
+             ]) &&
+             hasOnlyAllowedFields(data, [
+               'id', 'delegateName', 'delegateRole', 'workplaceCenter',
+               'monthlyQuotaHours', 'usedHours', 'reason', 'date', 'status'
+             ]) &&
+             isValidString(data.id, 1, 100) &&
+             isValidString(data.delegateName, 2, 150) &&
+             isValidString(data.delegateRole, 1, 100) &&
+             isValidString(data.workplaceCenter, 1, 150) &&
+             data.monthlyQuotaHours is int && data.monthlyQuotaHours >= 0 && data.monthlyQuotaHours <= 744 &&
+             data.usedHours is number && data.usedHours >= 0 && data.usedHours <= 744 &&
+             isValidString(data.reason, 1, 1000) &&
+             data.date is timestamp &&
+             isValidString(data.status, 1, 100);
+    }
+
+    function isValidCollectiveClause(data) {
+      return hasRequiredFields(data, [
+               'id', 'topic', 'category', 'currentCompanyValue',
+               'convenioMinimumValue', 'unionProposalValue', 'status', 'votesSupport'
+             ]) &&
+             hasOnlyAllowedFields(data, [
+               'id', 'topic', 'category', 'currentCompanyValue',
+               'convenioMinimumValue', 'unionProposalValue', 'status', 'votesSupport'
+             ]) &&
+             isValidString(data.id, 1, 100) &&
+             isValidString(data.topic, 2, 200) &&
+             isValidString(data.category, 1, 100) &&
+             isValidString(data.currentCompanyValue, 0, 500) &&
+             isValidString(data.convenioMinimumValue, 0, 500) &&
+             isValidString(data.unionProposalValue, 1, 500) &&
+             isValidString(data.status, 1, 100) &&
+             data.votesSupport is int && data.votesSupport >= 0 && data.votesSupport <= 10000000;
+    }
+
+    function isValidPulseSurvey(data) {
+      return hasRequiredFields(data, ['id', 'question', 'category', 'closesAt', 'isOpen', 'options']) &&
+             hasOnlyAllowedFields(data, ['id', 'question', 'category', 'closesAt', 'isOpen', 'options']) &&
+             isValidString(data.id, 1, 100) &&
+             isValidString(data.question, 3, 300) &&
+             isValidString(data.category, 1, 100) &&
+             data.closesAt is timestamp &&
+             data.isOpen is bool &&
+             data.options is list && data.options.size() >= 2 && data.options.size() <= 10;
+    }
+
+    // ===============================================================
+    // Collection Rules: love.deft.work
+    // ===============================================================
+
+    // Micro-items (links, words, phrases) and legacy discoveries
     match /discoveries/{discoveryId} {
-      allow read: if true;
-      allow create: if request.auth != null;
-      allow update, delete: if request.auth != null;
+      allow read: if canReadSharedDoc();
+      allow create: if isAuthenticated();
+      allow update, delete: if canModifySharedDoc();
     }
-    
-    // Reglas para perfiles de usuario
+
+    // Top-level Category Cards (color palette, order, pin status, sharing)
+    match /categories/{categoryId} {
+      allow read: if canReadSharedDoc();
+      allow create: if isAuthenticated();
+      allow update, delete: if canModifySharedDoc();
+    }
+
+    // User profiles
     match /users/{userId} {
       allow read: if true;
-      allow write: if request.auth != null && request.auth.uid == userId;
+      allow create, update, delete: if isOwner(userId);
+    }
+
+    // ===============================================================
+    // Collection Rules: union.deft.work
+    // ===============================================================
+
+    // Tokens públicos de carné sindical (solo Admin SDK: issueMemberCardToken / verifyPublicToken)
+    match /public_tokens/{tokenHash} {
+      allow read, write: if false;
+    }
+
+    // Colección principal de sindicatos: union.deft.work/{unionSlug}
+    match /unions/{unionSlug} {
+      // Portada pública del sindicato y estatutos (Art. 4.2 y Art. 8 LOLS)
+      allow read: if true;
+
+      // Alta autoservicio: requiere grupo promotor mínimo de 3 personas y el creador en executiveUids
+      allow create: if isSignedIn()
+        && isValidUnion(request.resource.data, unionSlug)
+        && request.auth.uid in request.resource.data.executiveUids;
+
+      // Solo la Comisión Ejecutiva puede actualizar; slug y createdAt son inmutables
+      allow update: if isExecutiveMember(unionSlug)
+        && isValidUnion(request.resource.data, unionSlug)
+        && areImmutableFieldsUnchanged(['slug', 'createdAt']);
+
+      allow delete: if false; // La disolución requiere acuerdo de asamblea según estatutos (Art. 4.2 LOLS)
+
+      // 1. Tablón de anuncios sindical (Art. 8.2.a LOLS)
+      match /posts/{postId} {
+        allow read: if resource.data.isPublic == true || isAffiliatedMember(unionSlug);
+        allow create: if isExecutiveMember(unionSlug) && isValidPost(request.resource.data);
+        allow update: if isExecutiveMember(unionSlug)
+          && isValidPost(request.resource.data)
+          && areImmutableFieldsUnchanged(['id', 'createdAt']);
+        allow delete: if isExecutiveMember(unionSlug);
+      }
+
+      // 2. Libro de Registro de Personas Afiliadas (Dato especialmente protegido RGPD Art. 9)
+      match /members/{memberId} {
+        // Solo la propia persona afiliada o la Comisión Ejecutiva pueden leer su ficha de afiliación
+        allow read: if isExecutiveMember(unionSlug) || (isSignedIn() && request.auth.uid == memberId);
+
+        // Solicitud de afiliación abierta (rol 'afiliado'/'pendiente', status 'pendiente', feeUpToDate true)
+        // o alta directa por la Comisión Ejecutiva
+        allow create: if isSignedIn() && isValidMember(request.resource.data) && (
+          isExecutiveMember(unionSlug) ||
+          (
+            request.auth.uid == memberId &&
+            request.resource.data.role in ['afiliado', 'pendiente'] &&
+            request.resource.data.status == 'pendiente' &&
+            request.resource.data.feeUpToDate == true &&
+            !('cardToken' in request.resource.data) &&
+            !('cardTokenHash' in request.resource.data)
+          )
+        );
+
+        allow update: if isExecutiveMember(unionSlug)
+          && isValidMember(request.resource.data)
+          && areImmutableFieldsUnchanged(['id', 'joinedAt']);
+
+        allow delete: if isExecutiveMember(unionSlug);
+      }
+
+      // 3. Libro de Actas (Asambleas y Comisión Ejecutiva - append-only)
+      match /minutes/{minuteId} {
+        allow read: if isAffiliatedMember(unionSlug);
+        allow create: if isExecutiveMember(unionSlug) && isValidMinute(request.resource.data);
+        allow update: if isExecutiveMember(unionSlug)
+          && isValidMinute(request.resource.data)
+          && areImmutableFieldsUnchanged(['id', 'date']);
+        allow delete: if false;
+      }
+
+      // 4. Libro de Contabilidad y Cuotas (Transparencia económica Art. 4.2 LOLS - append-only)
+      match /ledger/{entryId} {
+        allow read: if isAffiliatedMember(unionSlug);
+        allow create: if isExecutiveMember(unionSlug) && isValidLedgerEntry(request.resource.data);
+        allow update: if isExecutiveMember(unionSlug)
+          && isValidLedgerEntry(request.resource.data)
+          && areImmutableFieldsUnchanged(['id', 'date']);
+        allow delete: if false;
+      }
+
+      // 5. Asambleas y Votaciones por Sufragio Libre y Secreto (Art. 4.2 y Art. 8 LOLS)
+      match /assemblies/{assemblyId} {
+        allow read: if true;
+        allow create: if isExecutiveMember(unionSlug) && isValidAssembly(request.resource.data);
+        allow update: if isExecutiveMember(unionSlug)
+          && isValidAssembly(request.resource.data)
+          && areImmutableFieldsUnchanged(['id', 'createdAt']);
+        allow delete: if false;
+
+        // Censo de participación: escrito atómicamente por Cloud Function castSecretBallot (Admin SDK)
+        match /voter_receipts/{voterUid} {
+          allow read: if isSignedIn() && (request.auth.uid == voterUid || isExecutiveMember(unionSlug));
+          allow create, update, delete: if false;
+        }
+
+        // Urna de papeletas anónimas: escrita atómicamente por Cloud Function castSecretBallot (Admin SDK)
+        // Lectura permitida a personas afiliadas y ejecutiva para auditoría criptográfica de cadena SHA-256
+        match /ballots/{ballotId} {
+          allow read: if isAffiliatedMember(unionSlug);
+          allow create, update, delete: if false;
+        }
+      }
+
+      // 6. Canal de Consultas Laborales, Denuncias Internas y Comité de Empresa
+      match /consultations/{ticketId} {
+        allow read: if isExecutiveMember(unionSlug)
+          || (isSignedIn() && resource.data.authorUid == request.auth.uid)
+          || resource.data.isPublicCommitteeUpdate == true;
+
+        allow create: if isSignedIn()
+          && isValidConsultation(request.resource.data)
+          && request.resource.data.authorUid == request.auth.uid
+          && request.resource.data.isPublicCommitteeUpdate == false
+          && request.resource.data.status == 'pendiente'
+          && (!('unionResponse' in request.resource.data) || request.resource.data.unionResponse == '');
+
+        allow update: if isValidConsultation(request.resource.data)
+          && areImmutableFieldsUnchanged(['id', 'authorUid', 'createdAt'])
+          && (
+            isExecutiveMember(unionSlug) ||
+            (
+              isSignedIn() &&
+              resource.data.authorUid == request.auth.uid &&
+              areImmutableFieldsUnchanged(['isPublicCommitteeUpdate', 'status', 'unionResponse', 'isWorksCouncilCommunication'])
+            )
+          );
+
+        allow delete: if false;
+      }
+
+      // 7. Bóveda Documental LOLS con sello SHA-256 (append-only)
+      match /vault_documents/{docId} {
+        allow read: if resource.data.visibility == 'publicBoard'
+          || (resource.data.visibility == 'affiliatesOnly' && isAffiliatedMember(unionSlug))
+          || isExecutiveMember(unionSlug);
+
+        allow create: if isExecutiveMember(unionSlug) && isValidVaultDocument(request.resource.data);
+        allow update: if isExecutiveMember(unionSlug)
+          && isValidVaultDocument(request.resource.data)
+          && areImmutableFieldsUnchanged(['id', 'sha256Digest', 'uploadedAt']);
+        allow delete: if false;
+      }
+
+      // 8. Crédito Horario Sindical Art. 68.e ET (append-only)
+      match /hour_credits/{recordId} {
+        allow read: if isAffiliatedMember(unionSlug);
+        allow create: if isExecutiveMember(unionSlug) && isValidHourCredit(request.resource.data);
+        allow update: if isExecutiveMember(unionSlug)
+          && isValidHourCredit(request.resource.data)
+          && areImmutableFieldsUnchanged(['id', 'date']);
+        allow delete: if false;
+      }
+
+      // 9. Mesa de Negociación Colectiva y Cláusulas (append-only)
+      match /collective_clauses/{clauseId} {
+        allow read: if true;
+        allow create: if isExecutiveMember(unionSlug) && isValidCollectiveClause(request.resource.data);
+        allow update: if isValidCollectiveClause(request.resource.data)
+          && areImmutableFieldsUnchanged(['id'])
+          && (
+            isExecutiveMember(unionSlug) ||
+            (
+              isAffiliatedMember(unionSlug) &&
+              request.resource.data.diff(resource.data).affectedKeys().hasOnly(['votesSupport']) &&
+              request.resource.data.votesSupport == resource.data.votesSupport + 1
+            )
+          );
+        allow delete: if false;
+      }
+
+      // 10. Encuestas Pulso de Plantilla (append-only)
+      match /pulse_surveys/{surveyId} {
+        allow read: if true;
+        allow create: if isExecutiveMember(unionSlug) && isValidPulseSurvey(request.resource.data);
+        allow update: if isValidPulseSurvey(request.resource.data)
+          && areImmutableFieldsUnchanged(['id'])
+          && (
+            isExecutiveMember(unionSlug) ||
+            (
+              isSignedIn() &&
+              resource.data.isOpen == true &&
+              request.resource.data.diff(resource.data).affectedKeys().hasOnly(['options']) &&
+              request.resource.data.options is list &&
+              request.resource.data.options.size() == resource.data.options.size() &&
+              request.resource.data.options.size() <= 10
+            )
+          );
+        allow delete: if false;
+      }
+
+      // 11. Canal Ético Anónimo E2EE (Ley 2/2023 Informantes)
+      // Escrito exclusivamente por Admin SDK (submitWhistleblowerReport); consulta anónima vía checkWhistleblowerStatus.
+      match /whistleblower_reports/{trackingHash} {
+        allow read: if isExecutiveMember(unionSlug);
+        allow create, update, delete: if false;
+      }
+    }
+
+    // ===============================================================
+    // Default deny for all other paths (fail-closed)
+    // ===============================================================
+    match /{document=**} {
+      allow read, write: if false;
     }
   }
 }

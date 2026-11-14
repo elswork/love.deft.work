@@ -1,16 +1,34 @@
-# love.deft.work // Portal de Pasiones de Anticitera
+# love.deft.work // Tablero Keep de Pasiones & Micro-Notas
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Aplicación web estilo **Google Keep** diseñada específicamente para capturar, ordenar, relacionar y compartir **elementos cortos** (**🔗 Links**, **🏷️ Palabras** y **💬 Frases**) organizados en **Listas por Categorías**.
 
-Currently, two official plugins are available:
+## Características Principales
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+1. **Tablero Dual de 2 Niveles (`App.jsx`)**:
+   - **Nivel Superior — Tarjetas de Categoría**: Tarjetas tipo Google Keep con paleta cromática personalizable (`keep_palette.js`), contadores por tipo (`🔗`, `🏷️`, `💬`), vista previa interactiva con checkboxes, captura rápida inline (`+ Añadir a <Categoría>…`), reordenación **Drag & Drop**, fijado (`★`), vista expandida (`⤢`) y compartición.
+   - **Nivel Inferior — Muro de Mini-Tarjetas**: Píldoras ultra-compactas adaptadas al tipo de contenido (enlace con favicon y dominio, palabra léxica destacada o cita/frase corta), con copia en 1 clic, apertura directa, fijado, check (`✓` envía los completados al final), reordenación **Drag & Drop** y ordenación en 1 clic (`Manual / Pin`, `Recientes`, `Alfabético A–Z`, `Más usados`).
 
-## React Compiler
+2. **Captura Rápida Inteligente (`DiscoveryForm.jsx` & `EnrichmentService.js`)**:
+   - Detección automática de **Link**, **Palabra** o **Frase**.
+   - Extracción automática de dominio, favicon y título corto para URLs.
+   - **Regla de la Biblioteca**: inferencia automática de categoría según el dominio o palabras clave.
+   - Soporte de sintaxis rápida en línea: `#Categoría` para asignar o crear categorías al vuelo y `@término` para enlazar con otros elementos existentes.
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+3. **Relaciones Cruzadas entre Categorías (`ConnectionsGraph.jsx`)**:
+   - Vinculación bidireccional entre ítems de distintas categorías (`relatedIds`) y presencia simultánea en categorías secundarias (`extraCategories`).
+   - Resaltado cruzado interactivo (`is-related-glow`) al pasar el cursor y vista de **Mapa de Conexiones SVG**.
 
-## Expanding the ESLint configuration
+4. **Compartición Dual por Categoría y por Elemento (`ShareModal.jsx`)**:
+   - Interruptor **Público / Privado** (`isPublic`) sincronizado con Cloud Firestore.
+   - Enlaces directos profundos (`?cat=...` y `?item=...`).
+   - Exportación en 1 clic a **Markdown / WhatsApp / Portapapeles**.
+   - Invitación de colaboradores por correo de Google (`sharedWith`) y código **QR** escaneable.
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+## Desarrollo y Despliegue
+
+```bash
+npm install
+npm run lint
+npm run build
+npx firebase-tools deploy --project free-deft-work --only hosting:love-deft-work,firestore:rules
+```

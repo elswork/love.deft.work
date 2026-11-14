@@ -1,3 +1,4 @@
+/* eslint-disable react-refresh/only-export-components */
 import React, { createContext, useState, useEffect, useContext } from 'react';
 import { auth, googleProvider } from '../firebase';
 import { onAuthStateChanged, signOut, signInWithPopup } from 'firebase/auth';
