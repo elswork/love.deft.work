@@ -35,6 +35,8 @@ export default function AgentCommandPalette({
   onAnalyzeActiveItem,
   onCreateNewNote,
   onToggleTheme,
+  onResetToPlatformVault,
+  canEdit,
 }) {
   const [queryText, setQueryText] = useState('');
   const [selectedIndex, setSelectedIndex] = useState(0);
@@ -139,7 +141,19 @@ export default function AgentCommandPalette({
         shortcut: 'T',
         kind: 'action',
         run: () => onToggleTheme?.(),
-      }
+      },
+      ...(canEdit && onResetToPlatformVault
+        ? [
+            {
+              id: 'cmd-reset-platform',
+              group: 'Administración Plataforma',
+              label: 'Purgar pruebas y cargar Bóveda Operativa real (18 nodos)',
+              shortcut: 'INIT',
+              kind: 'action',
+              run: () => onResetToPlatformVault(),
+            },
+          ]
+        : [])
     );
 
     agents.forEach((ag) => {
@@ -197,6 +211,8 @@ export default function AgentCommandPalette({
     onCreateNewNote,
     onSwitchView,
     onToggleTheme,
+    onResetToPlatformVault,
+    canEdit,
     onSelectAgent,
     onSelectItem,
   ]);

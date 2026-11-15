@@ -374,12 +374,12 @@ export default function AgentWorkspaceCanvas({
                       onClick={() =>
                         onDispatchPrompt(
                           activeAgent.id,
-                          'Detecta huecos epistémicos y propón 2 enlaces puente entre categorías.',
+                          'Audita la arquitectura actual y propón la mejora técnica de mayor impacto en el crecimiento de love.deft.work.',
                           dispatchScope
                         )
                       }
                     >
-                      Huecos epistémicos
+                      Palanca de crecimiento
                     </button>
                     <button
                       type="button"
@@ -387,12 +387,12 @@ export default function AgentWorkspaceCanvas({
                       onClick={() =>
                         onDispatchPrompt(
                           activeAgent.id,
-                          'Sintetiza conclusiones accionables e incorpora referencias [[WikiLink]].',
+                          'Detecta nodos huérfanos o huecos entre especificaciones y backlog y propón enlaces [[WikiLink]].',
                           dispatchScope
                         )
                       }
                     >
-                      Síntesis ejecutiva
+                      Auditar conexiones
                     </button>
                   </div>
                 </div>

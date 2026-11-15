@@ -35,6 +35,8 @@ import {
   createLogEntry,
   runStreamingAgentTask,
 } from './services/AgentStreamAdapter';
+import { seedPlatformVault } from './services/PlatformSeedService';
+import { buildLocalPlatformSnapshot } from './data/platform_vault';
 import { getColorConfig } from './data/keep_palette';
 import SidebarExplorer from './components/SidebarExplorer';
 import AgentWorkspaceCanvas from './components/AgentWorkspaceCanvas';
@@ -54,11 +56,14 @@ const ShareModal = lazy(() => import('./components/ShareModal'));
 
 /**
  * Sincronización reactiva con Firestore (`discoveries` y `categories`).
+ * Si Firestore está limpio tras purgar contenido de prueba, carga la instantánea
+ * operativa de plataforma en memoria mientras se sincroniza persistentemente.
  */
 function useVaultData(onFirstLoad) {
   const [items, setItems] = useState([]);
   const [categoriesDocs, setCategoriesDocs] = useState({});
   const [loading, setLoading] = useState(true);
+  const [isLocalOnly, setIsLocalOnly] = useState(false);
   const initializedRef = useRef(false);
 
   useEffect(() => {
@@ -66,12 +71,31 @@ function useVaultData(onFirstLoad) {
     const unsubItems = onSnapshot(
       q,
       (snapshot) => {
+        if (snapshot.docs.length === 0) {
+          const fallback = buildLocalPlatformSnapshot(
+            EnrichmentService.normalizeDiscoveryDoc,
+            getColorConfig
+          );
+          setItems(fallback.items);
+          setCategoriesDocs((prev) =>
+            Object.keys(prev).length > 0 ? prev : fallback.categoriesMap
+          );
+          setIsLocalOnly(true);
+          setLoading(false);
+          if (!initializedRef.current) {
+            initializedRef.current = true;
+            onFirstLoad?.(fallback.items);
+          }
+          return;
+        }
+
         const docs = snapshot.docs.map((d) =>
           EnrichmentService.normalizeDiscoveryDoc({ id: d.id, ...d.data() })
         );
         setItems(docs);
+        setIsLocalOnly(false);
         setLoading(false);
-        if (!initializedRef.current && docs.length > 0) {
+        if (!initializedRef.current) {
           initializedRef.current = true;
           onFirstLoad?.(docs);
         }
@@ -85,6 +109,7 @@ function useVaultData(onFirstLoad) {
     const unsubCats = onSnapshot(
       collection(db, 'categories'),
       (snapshot) => {
+        if (snapshot.docs.length === 0) return;
         const map = {};
         snapshot.docs.forEach((d) => {
           map[d.id] = { id: d.id, ...d.data() };
@@ -102,7 +127,7 @@ function useVaultData(onFirstLoad) {
     };
   }, [onFirstLoad]);
 
-  return { items, setItems, categoriesDocs, setCategoriesDocs, loading };
+  return { items, setItems, categoriesDocs, setCategoriesDocs, loading, isLocalOnly };
 }
 
 function CommandCenterApp() {
@@ -123,7 +148,8 @@ function CommandCenterApp() {
   const [commandOpen, setCommandOpen] = useState(false);
   const [newNoteOpen, setNewNoteOpen] = useState(false);
   const [newNoteTitle, setNewNoteTitle] = useState('');
-  const [newNoteCategory, setNewNoteCategory] = useState('Anticitera');
+  const [newNoteCategory, setNewNoteCategory] = useState('04 · Hoja de Ruta & Backlog Vivo');
+  const [seedingPlatform, setSeedingPlatform] = useState(false);
 
   // Filtros y selección de Bóveda
   const [searchQuery, setSearchQuery] = useState('');
@@ -152,7 +178,7 @@ function CommandCenterApp() {
   const [activeAgentId, setActiveAgentId] = useState('athena');
   const [logs, setLogs] = useState(() => [
     createLogEntry('info', 'SYSTEM', 'Command Center inicializado · Stream SSE/WS listo.'),
-    createLogEntry('hitl', 'ATH-01', 'Athena espera aprobación HITL de síntesis transversal.'),
+    createLogEntry('hitl', 'ATH-01', 'ATH-01 · Propuesta de crecimiento lista (Web Clipper MV3 + Ingesta): esperando [A] Aprobar.'),
   ]);
   const [transportMode, setTransportMode] = useState('simulator');
   const [transportEndpoint, setTransportEndpoint] = useState('');
@@ -185,7 +211,7 @@ function CommandCenterApp() {
     setAgents(createInitialAgents(docs));
   }, []);
 
-  const { items, setItems, categoriesDocs, setCategoriesDocs, loading } =
+  const { items, setItems, categoriesDocs, setCategoriesDocs, loading, isLocalOnly } =
     useVaultData(handleFirstVaultLoad);
 
   const itemsById = useMemo(
@@ -537,7 +563,7 @@ function CommandCenterApp() {
         const isRelation = ag.proposal.kind === 'create_relation' && ag.proposal.targetId;
         await createMarkdownFile({
           title: ag.proposal.title,
-          category: ag.proposal.category || 'Anticitera',
+          category: ag.proposal.category || '03 · Motor de Crecimiento & Ingesta',
           markdownContent: ag.proposal.markdownContent,
           kind: isRelation ? 'relation' : 'file',
           sourceId: ag.proposal.sourceId || '',
@@ -741,7 +767,7 @@ function CommandCenterApp() {
 
       await createMarkdownFile({
         title: relTitle,
-        category: 'Relaciones & Mapas',
+        category: '06 · Relaciones Estructurales',
         markdownContent: relMd,
         kind: 'relation',
         sourceId: source.id,
@@ -754,6 +780,58 @@ function CommandCenterApp() {
     },
     [appendLog, createMarkdownFile, itemsById]
   );
+
+  const handleResetToPlatformVault = useCallback(async () => {
+    if (seedingPlatform) return;
+    if (!user) {
+      await loginWithGoogle();
+      return;
+    }
+    setSeedingPlatform(true);
+    try {
+      const res = await seedPlatformVault({
+        user,
+        purgeExisting: true,
+        onProgressLog: (msg) => appendLog(createLogEntry('info', 'BOOTSTRAP', msg)),
+      });
+      setActiveItemId('plat-vision-v3');
+      setDirty(false);
+      setAgents(createInitialAgents([]));
+      appendLog(
+        createLogEntry(
+          'done',
+          'BOOTSTRAP',
+          `Bóveda real cargada: ${res.categoriesCount} categorías, ${res.itemsCount} nodos operativos.`
+        )
+      );
+    } catch (err) {
+      appendLog(
+        createLogEntry('warn', 'BOOTSTRAP', err?.message || 'Error al cargar bóveda real.')
+      );
+    } finally {
+      setSeedingPlatform(false);
+    }
+  }, [appendLog, loginWithGoogle, seedingPlatform, user]);
+
+  const hasLegacyDemoItems = useMemo(
+    () => items.some((it) => String(it.id).startsWith('demo-') || it.id === '8lSZrcwFSKS4e7MBLyP2'),
+    [items]
+  );
+
+  const autoSeedTriggeredRef = useRef(false);
+  useEffect(() => {
+    if (!isLocalOnly || user?.email !== 'elswork@gmail.com' || autoSeedTriggeredRef.current) {
+      return;
+    }
+    autoSeedTriggeredRef.current = true;
+    void seedPlatformVault({
+      user,
+      purgeExisting: false,
+      onProgressLog: (msg) => appendLog(createLogEntry('info', 'BOOTSTRAP', msg)),
+    }).catch((err) => {
+      console.warn('[AutoSeed]', err);
+    });
+  }, [appendLog, isLocalOnly, user]);
 
   const handleDeleteItem = useCallback(
     async (it) => {
@@ -955,6 +1033,28 @@ function CommandCenterApp() {
         </div>
       </header>
 
+      {user && (hasLegacyDemoItems || isLocalOnly) && (
+        <div className="cc-migration-banner">
+          <span>
+            {hasLegacyDemoItems
+              ? 'Contenido de prueba detectado en Firestore. Reemplázalo por la bóveda real de operación y crecimiento de la plataforma (18 nodos + diagrama SVG).'
+              : 'Bóveda real de plataforma activa en cliente (18 nodos). Sincronízala ahora con Firestore y Storage de free-deft-work.'}
+          </span>
+          <button
+            type="button"
+            className="cc-btn cc-btn-primary cc-btn-sm"
+            disabled={seedingPlatform}
+            onClick={handleResetToPlatformVault}
+          >
+            {seedingPlatform
+              ? 'Sincronizando bóveda...'
+              : hasLegacyDemoItems
+              ? 'Purgar pruebas y cargar Bóveda de Plataforma'
+              : 'Persistir Bóveda Real en Firestore'}
+          </button>
+        </div>
+      )}
+
       {/* Grid 3-paneles: Sidebar | Workspace Canvas | Telemetry Inspector */}
       <div className="cc-workbench">
         <SidebarExplorer
@@ -1080,7 +1180,7 @@ function CommandCenterApp() {
         hidden
         onChange={(e) => {
           const f = e.target.files?.[0];
-          if (f) handleUploadNewFile(f, activeItem?.category || 'Multimedia & PDF');
+          if (f) handleUploadNewFile(f, activeItem?.category || '01 · Arquitectura & Núcleo');
           e.target.value = '';
         }}
       />
@@ -1102,6 +1202,8 @@ function CommandCenterApp() {
         onAnalyzeActiveItem={handleAnalyzeActiveItem}
         onCreateNewNote={() => setNewNoteOpen(true)}
         onToggleTheme={handleToggleTheme}
+        onResetToPlatformVault={handleResetToPlatformVault}
+        canEdit={Boolean(user)}
       />
 
       {/* Diálogo ligero para crear nueva nota .md */}
@@ -1135,7 +1237,14 @@ function CommandCenterApp() {
               value={newNoteCategory}
               onChange={(e) => setNewNoteCategory(e.target.value)}
             >
-              {Array.from(new Set(['Anticitera', 'Tecnología', ...categories.map((c) => c.name)])).map(
+              {Array.from(
+                new Set([
+                  '01 · Arquitectura & Núcleo',
+                  '03 · Motor de Crecimiento & Ingesta',
+                  '04 · Hoja de Ruta & Backlog Vivo',
+                  ...categories.map((c) => c.name),
+                ])
+              ).map(
                 (name) => (
                   <option key={name} value={name}>
                     {name}

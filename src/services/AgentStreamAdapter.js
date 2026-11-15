@@ -37,110 +37,120 @@ export function createLogEntry(level, source, message, payload = '') {
  * sin dependencias externas obligatorias, sincronizados con los archivos reales de la bóveda.
  */
 export function createInitialAgents(items = []) {
-  const primary = items[0] || null;
-  const secondary = items[1] || items[0] || null;
+  const visionNode =
+    items.find((it) => it.id === 'plat-vision-v3') ||
+    items[0] ||
+    null;
+  const backlogNode =
+    items.find((it) => it.id === 'plat-backlog-sprints') ||
+    items[1] ||
+    visionNode;
 
-  const pName = primary ? getFileDisplayName(primary) : 'manifiesto-anticitera.md';
-  const sName = secondary ? getFileDisplayName(secondary) : 'arquitectura-conocimiento.md';
+  const vTitle = visionNode?.title || 'Sistema Operativo de Conocimiento · Visión v3';
+  const bTitle = backlogNode?.title || 'Backlog Técnico Priorizado · Próximos Sprints';
+  const vFile = visionNode ? getFileDisplayName(visionNode) : 'sistema-operativo-vision-v3.md';
+  const bFile = backlogNode ? getFileDisplayName(backlogNode) : 'backlog-tecnico-sprints.md';
+  const totalCount = items.length;
 
   return [
     {
       id: 'athena',
       codename: 'ATH-01',
       name: 'Athena · Synthesist',
-      role: 'Síntesis transversal y detección de huecos epistémicos',
+      role: 'Arquitectura evolutiva, especificación de sprints y convergencia de producto',
       model: 'gemini-2.5-flash',
       transport: 'stream-local',
       status: 'awaiting_approval',
-      progress: 92,
-      tokens: 418,
-      latencyMs: 640,
-      targetItemId: primary?.id || '',
-      targetTitle: primary?.title || 'Manifiesto Anticitera',
-      currentTool: 'propose_vault_synthesis',
+      progress: 100,
+      tokens: 394,
+      latencyMs: 520,
+      targetItemId: backlogNode?.id || '',
+      targetTitle: bTitle,
+      currentTool: 'propose_growth_milestone',
       streamedMarkdown: [
-        `### Propuesta de Síntesis y Enlace Estructural`,
+        `### Diagnóstico de Crecimiento · love.deft.work`,
         '',
-        `He cruzado el contenido de **[[${primary?.title || 'Manifiesto Anticitera'}]]** (\`${pName}\`) con los nodos activos de la bóveda:`,
+        `He analizado los **${totalCount || 18}** nodos activos cruzando **[[${vTitle}]]** con **[[${bTitle}]]**:`,
         '',
-        `- **Hipótesis de enlace:** Existe alta afinidad semántica con [[${secondary?.title || 'Arquitectura de Conocimiento'}]].`,
-        `- **Acción propuesta:** Consolidar una nota Markdown verificada y registrar una **Relación-Elemento** (\`kind: relation\`) para hacer explícito el puente conceptual.`,
-        `- **Riesgo evaluado:** Bajo · 0 colisiones de identificadores detectadas.`,
+        `- **Palanca nº 1 (Captura sin fricción):** Priorizar el *Web Clipper MV3* + cola \`pending_bot\` para multiplicar la tasa de ingesta semanal desde navegador y móvil.`,
+        `- **Palanca nº 2 (Memoria vectorial e historial):** Añadir subcolección \`revisions/\` antes de consolidar ediciones de agentes en \`.md\` existentes.`,
+        `- **Propuesta HITL lista:** Crear nota técnica de implementación conectada al backlog para iniciar el siguiente sprint.`,
       ].join('\n'),
       proposal: {
         kind: 'create_note',
-        title: `Síntesis · ${primary?.title || 'Núcleo de Bóveda'}`,
-        category: primary?.category || 'Anticitera',
-        relationLabel: 'sintetiza_y_conecta',
-        sourceId: primary?.id || '',
-        targetId: secondary?.id || '',
+        title: 'Especificación · Web Clipper MV3 & Cola de Ingesta',
+        category: '03 · Motor de Crecimiento & Ingesta',
+        relationLabel: 'implementa',
+        sourceId: backlogNode?.id || '',
+        targetId: visionNode?.id || '',
         markdownContent: [
-          `# Síntesis · ${primary?.title || 'Núcleo de Bóveda'}`,
+          `# Especificación · Web Clipper MV3 & Cola de Ingesta`,
           '',
-          `> Generado en simbiosis Humano + **Athena · Synthesist**`,
+          `> Propuesta consolidada por Humano + **Athena · Synthesist** para ampliar \`love.deft.work\``,
           '',
-          `## Hallazgos principales`,
-          `- Nodo origen: [[${primary?.title || pName}]]`,
-          `- Puente propuesto: [[${secondary?.title || sName}]]`,
+          `## Objetivo`,
+          `Reducir a **< 3 segundos** la captura de URLs, citas seleccionadas o PDFs desde Chrome directamente hacia [[Pipeline de Ingesta Automática · URLs y Multimedia]].`,
           '',
-          `## Conclusión accionable`,
-          `Validar las fuentes multimedia adjuntas y mantener actualizada la relación bidireccional en el grafo.`,
+          `## Contrato mínimo del payload`,
+          `- Escritura autenticada en \`discoveries/\` con \`authorKind: "human"\` y \`reviewStatus: "pending"\`.`,
+          `- Enriquecimiento automático en segundo plano vía [[Contrato de Streaming SSE y WebSocket]].`,
+          `- Validación final humana mediante atajo \`[A]\` según [[Flujo Human-in-the-Loop (HITL) y Telemetría]].`,
         ].join('\n'),
       },
       toolCalls: [
-        { id: 'tc-1', tool: 'vault.read_index', args: '{ scope: "visible", limit: 30 }', status: 'ok', durationMs: 38 },
-        { id: 'tc-2', tool: 'graph.extract_wikilinks', args: `{ file: "${pName}" }`, status: 'ok', durationMs: 92 },
-        { id: 'tc-3', tool: 'hitl.stage_proposal', args: '{ action: "create_note" }', status: 'pending', durationMs: 510 },
+        { id: 'tc-1', tool: 'vault.read_index', args: `{ scope: "platform", nodes: ${totalCount} }`, status: 'ok', durationMs: 34 },
+        { id: 'tc-2', tool: 'graph.trace_dependencies', args: `{ from: "${vFile}", to: "${bFile}" }`, status: 'ok', durationMs: 88 },
+        { id: 'tc-3', tool: 'hitl.stage_proposal', args: '{ target: "03 · Motor de Crecimiento & Ingesta" }', status: 'pending', durationMs: 398 },
       ],
     },
     {
       id: 'hermes',
       codename: 'HRM-02',
       name: 'Hermes · Graph Linker',
-      role: 'Curación automática de [[WikiLinks]] y nodos huérfanos',
+      role: 'Detección de nodos huérfanos, convergencia taxonómica y [[WikiLinks]]',
       model: 'gemini-2.5-flash',
       transport: 'stream-local',
       status: 'completed',
       progress: 100,
-      tokens: 276,
-      latencyMs: 390,
-      targetItemId: secondary?.id || '',
-      targetTitle: secondary?.title || 'Índice de Conexiones',
+      tokens: 248,
+      latencyMs: 310,
+      targetItemId: visionNode?.id || '',
+      targetTitle: vTitle,
       currentTool: 'idle',
       streamedMarkdown: [
-        `### Auditoría de Integridad de Grafo completada`,
+        `### Salud del Hipergrafo Verificada`,
         '',
-        `- Enlaces \`[[WikiLink]]\` verificados sin destinos rotos en el subgrafo principal.`,
-        `- Listo para ejecutar descubrimiento de conexiones ante un nuevo archivo o comando humano.`,
+        `- Supervisando **${totalCount || 18} nodos** y sus relaciones reificadas (\`kind: "relation"\`).`,
+        `- Selecciona cualquier nota o pulsa **Huecos epistémicos** abajo para que proponga nuevas aristas entre categorías.`,
       ].join('\n'),
       proposal: null,
       toolCalls: [
-        { id: 'tc-h1', tool: 'graph.scan_orphans', args: '{ threshold: 0 }', status: 'ok', durationMs: 44 },
-        { id: 'tc-h2', tool: 'links.verify_targets', args: '{ mode: "strict" }', status: 'ok', durationMs: 118 },
+        { id: 'tc-h1', tool: 'graph.scan_orphans', args: '{ threshold: 0 }', status: 'ok', durationMs: 41 },
+        { id: 'tc-h2', tool: 'taxonomy.check_library_rule', args: '{ categories: 6 }', status: 'ok', durationMs: 96 },
       ],
     },
     {
       id: 'argus',
       codename: 'ARG-03',
-      name: 'Argus · Media Verifier',
-      role: 'Validación de adjuntos (.pdf, .svg, .mp4, .url) y backlinks',
+      name: 'Argus · Security & Quality',
+      role: 'Auditoría de firestore.rules, límites Storage (15 MB) y esquema de metadatos',
       model: 'verifier-v1',
       transport: 'stream-local',
       status: 'paused',
-      progress: 45,
-      tokens: 124,
-      latencyMs: 215,
-      targetItemId: '',
-      targetTitle: 'Cola de verificación multimedia',
+      progress: 50,
+      tokens: 142,
+      latencyMs: 190,
+      targetItemId: 'plat-security-rules',
+      targetTitle: 'Directrices de Seguridad y Reglas Firebase',
       currentTool: 'await_resume',
       streamedMarkdown: [
-        `### Inspección en pausa por control humano`,
+        `### Auditoría de Cumplimiento en Pausa`,
         '',
-        `Pulsa **[P] Reanudar** o envía una nueva directriz para verificar checksums, MIME types y visibilidad compartida en Storage.`,
+        `Pulsa **[P] Reanudar** o envía un prompt para auditar adjuntos en \`love_attachments/\`, visibilidad \`isPublic\` o consistencia de campos antes de desplegar cambios en \`free-deft-work\`.`,
       ].join('\n'),
       proposal: null,
       toolCalls: [
-        { id: 'tc-a1', tool: 'storage.inspect_headers', args: '{ bucket: "love_attachments" }', status: 'paused', durationMs: 215 },
+        { id: 'tc-a1', tool: 'security.audit_rules_alignment', args: '{ project: "free-deft-work" }', status: 'paused', durationMs: 190 },
       ],
     },
   ];
