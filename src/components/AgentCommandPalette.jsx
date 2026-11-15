@@ -34,6 +34,7 @@ export default function AgentCommandPalette({
   onTogglePauseAgent,
   onAnalyzeActiveItem,
   onCreateNewNote,
+  onCreateCategory,
   onToggleTheme,
   onResetToPlatformVault,
   canEdit,
@@ -110,6 +111,18 @@ export default function AgentCommandPalette({
         kind: 'action',
         run: () => onCreateNewNote?.(),
       },
+      ...(canEdit && onCreateCategory
+        ? [
+            {
+              id: 'cmd-new-cat',
+              group: 'Acciones rápidas',
+              label: 'Crear nueva categoría',
+              shortcut: 'C',
+              kind: 'action',
+              run: () => onCreateCategory(),
+            },
+          ]
+        : []),
       {
         id: 'cmd-view-stream',
         group: 'Navegación',
@@ -209,6 +222,7 @@ export default function AgentCommandPalette({
     onTogglePauseAgent,
     onAnalyzeActiveItem,
     onCreateNewNote,
+    onCreateCategory,
     onSwitchView,
     onToggleTheme,
     onResetToPlatformVault,

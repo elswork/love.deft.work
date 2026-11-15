@@ -491,8 +491,21 @@ button {
   background: var(--cc-accent-soft);
 }
 
+.cc-section-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.cc-cat-header-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
 .cc-cat-trigger {
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   display: flex;
   align-items: center;
   gap: 6px;
@@ -504,6 +517,55 @@ button {
   font-size: 12px;
   font-weight: 600;
   text-align: left;
+}
+
+.cc-cat-del-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--cc-text-dim);
+  opacity: 0;
+  transition: opacity 0.12s ease, color 0.12s ease, background 0.12s ease;
+}
+
+.cc-cat-header-row:hover .cc-cat-del-btn,
+.cc-cat-header-row:focus-within .cc-cat-del-btn {
+  opacity: 1;
+}
+
+.cc-cat-del-btn:hover {
+  color: var(--tone-rose);
+  background: rgba(244, 63, 94, 0.12);
+}
+
+@media (hover: none) {
+  .cc-cat-del-btn {
+    opacity: 0.75;
+  }
+}
+
+.cc-color-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.cc-color-swatch {
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  border: 2px solid transparent;
+  transition: transform 0.12s ease, border-color 0.12s ease;
+}
+
+.cc-color-swatch.is-selected {
+  border-color: var(--cc-text);
+  transform: scale(1.12);
 }
 
 .cc-cat-trigger:hover {

@@ -37,7 +37,7 @@ import {
 } from './services/AgentStreamAdapter';
 import { seedPlatformVault } from './services/PlatformSeedService';
 import { buildLocalPlatformSnapshot } from './data/platform_vault';
-import { getColorConfig } from './data/keep_palette';
+import { KEEP_COLORS, getColorConfig } from './data/keep_palette';
 import SidebarExplorer from './components/SidebarExplorer';
 import AgentWorkspaceCanvas from './components/AgentWorkspaceCanvas';
 import TelemetryInspector from './components/TelemetryInspector';
@@ -149,6 +149,12 @@ function CommandCenterApp() {
   const [newNoteOpen, setNewNoteOpen] = useState(false);
   const [newNoteTitle, setNewNoteTitle] = useState('');
   const [newNoteCategory, setNewNoteCategory] = useState('04 · Hoja de Ruta & Backlog Vivo');
+  const [newCatOpen, setNewCatOpen] = useState(false);
+  const [newCatName, setNewCatName] = useState('');
+  const [newCatColor, setNewCatColor] = useState('cyan');
+  const [deleteCatTarget, setDeleteCatTarget] = useState(null);
+  const [deleteCatMode, setDeleteCatMode] = useState('move'); // 'move' | 'purge'
+  const [deleteCatFallback, setDeleteCatFallback] = useState('');
   const [seedingPlatform, setSeedingPlatform] = useState(false);
 
   // Filtros y selección de Bóveda
@@ -631,8 +637,8 @@ function CommandCenterApp() {
         scope === 'ACTIVE_ITEM'
           ? visibleItems
           : scope === 'ALL'
-          ? visibleItems
-          : visibleItems.filter(
+            ? visibleItems
+            : visibleItems.filter(
               (it) =>
                 it.category === scope || (it.extraCategories || []).includes(scope)
             );
@@ -642,8 +648,8 @@ function CommandCenterApp() {
             ? getFileDisplayName(activeItem)
             : 'Toda la bóveda'
           : scope === 'ALL'
-          ? 'Toda la bóveda'
-          : `Categoría: ${scope}`;
+            ? 'Toda la bóveda'
+            : `Categoría: ${scope}`;
 
       await runStreamingAgentTask({
         agentId,
@@ -839,17 +845,126 @@ function CommandCenterApp() {
       setItems((prev) => prev.filter((x) => x.id !== it.id));
       if (activeItemId === it.id) setActiveItemId('');
       try {
-        await deleteDoc(doc(db, 'discoveries', it.id));
-        if (it.attachment?.storagePath) {
-          await AttachmentService.deleteAttachment(it.attachment.storagePath);
-        }
-        appendLog(createLogEntry('warn', 'VAULT', `Archivo eliminado: ${getFileDisplayName(it)}`));
-      } catch (err) {
-        console.error('[Vault] Error al eliminar:', err);
+      await deleteDoc(doc(db, 'discoveries', it.id));
+      if (it.attachment?.storagePath) {
+        await AttachmentService.deleteAttachment(it.attachment.storagePath);
       }
-    },
-    [activeItemId, appendLog, setItems, user]
-  );
+      appendLog(createLogEntry('warn', 'VAULT', `Archivo eliminado: ${getFileDisplayName(it)}`));
+    } catch (err) {
+      console.error('[Vault] Error al eliminar:', err);
+    }
+  }, [activeItemId, appendLog, setItems, user]);
+
+  const handleSubmitNewCategory = async (e) => {
+    e.preventDefault();
+    const cleanName = newCatName.trim();
+    if (!cleanName || !user) return;
+    const color = getColorConfig(newCatColor);
+    const meta = {
+      name: cleanName,
+      colorKey: color.key,
+      pinned: false,
+      order: Date.now(),
+      isPublic: true,
+      sharedWith: [],
+      ownerUid: user.uid,
+      ownerEmail: user.email || '',
+      updatedAt: serverTimestamp(),
+    };
+    setCategoriesDocs((prev) => ({
+      ...prev,
+      [cleanName]: { id: cleanName, ...meta },
+    }));
+    setExpandedCats((prev) => ({ ...prev, [cleanName]: true }));
+    setNewCatName('');
+    setNewCatOpen(false);
+    try {
+      await setDoc(doc(db, 'categories', cleanName), meta, { merge: true });
+      appendLog(createLogEntry('done', 'VAULT', `Categoría creada: ${cleanName}`));
+    } catch (err) {
+      console.error('[Vault] Error creando categoría:', err);
+    }
+  };
+
+  const handleRequestDeleteCategory = (cat) => {
+    if (!cat || !user) return;
+    const otherCats = categories.filter((c) => c.name !== cat.name).map((c) => c.name);
+    setDeleteCatFallback(otherCats[0] || 'General');
+    setDeleteCatMode(cat.files.length > 0 && otherCats.length > 0 ? 'move' : 'purge');
+    setDeleteCatTarget(cat);
+  };
+
+  const handleConfirmDeleteCategory = async (e) => {
+    e.preventDefault();
+    if (!deleteCatTarget || !user) return;
+    const catName = deleteCatTarget.name;
+    const targetFallback = deleteCatFallback.trim() || 'General';
+
+    const primaryItems = items.filter((it) => it.category === catName);
+    const crossItems = items.filter((it) => (it.extraCategories || []).includes(catName));
+
+    try {
+      if (deleteCatMode === 'move' && primaryItems.length > 0) {
+        await ensureCategoryDoc(targetFallback);
+        await Promise.all(
+          primaryItems.map((it) =>
+            updateDoc(doc(db, 'discoveries', it.id), {
+              category: targetFallback,
+              updatedAt: serverTimestamp(),
+            })
+          )
+        );
+        setItems((prev) =>
+          prev.map((it) => (it.category === catName ? { ...it, category: targetFallback } : it))
+        );
+      } else if (deleteCatMode === 'purge' && primaryItems.length > 0) {
+        await Promise.all(
+          primaryItems.map(async (it) => {
+            await deleteDoc(doc(db, 'discoveries', it.id));
+            if (it.attachment?.storagePath) {
+              await AttachmentService.deleteAttachment(it.attachment.storagePath).catch(() => {});
+            }
+          })
+        );
+        const removedIds = new Set(primaryItems.map((it) => it.id));
+        setItems((prev) => prev.filter((it) => !removedIds.has(it.id)));
+        if (removedIds.has(activeItemId)) setActiveItemId('');
+      }
+
+      if (crossItems.length > 0) {
+        await Promise.all(
+          crossItems.map((it) =>
+            updateDoc(doc(db, 'discoveries', it.id), {
+              extraCategories: (it.extraCategories || []).filter((c) => c !== catName),
+              updatedAt: serverTimestamp(),
+            })
+          )
+        );
+        setItems((prev) =>
+          prev.map((it) =>
+            (it.extraCategories || []).includes(catName)
+              ? {
+                  ...it,
+                  extraCategories: (it.extraCategories || []).filter((c) => c !== catName),
+                }
+              : it
+          )
+        );
+      }
+
+      await deleteDoc(doc(db, 'categories', catName));
+      setCategoriesDocs((prev) => {
+        const next = { ...prev };
+        delete next[catName];
+        return next;
+      });
+      appendLog(createLogEntry('warn', 'VAULT', `Categoría eliminada: ${catName}`));
+    } catch (err) {
+      console.error('[Vault] Error eliminando categoría:', err);
+    } finally {
+      setDeleteCatTarget(null);
+    }
+  };
 
   // Autocompletado de WikiLinks [[
   const handleEditorChange = (val) => {
@@ -1049,8 +1164,8 @@ function CommandCenterApp() {
             {seedingPlatform
               ? 'Sincronizando bóveda...'
               : hasLegacyDemoItems
-              ? 'Purgar pruebas y cargar Bóveda de Plataforma'
-              : 'Persistir Bóveda Real en Firestore'}
+                ? 'Purgar pruebas y cargar Bóveda de Plataforma'
+                : 'Persistir Bóveda Real en Firestore'}
           </button>
         </div>
       )}
@@ -1089,6 +1204,9 @@ function CommandCenterApp() {
           onDropFileOnCategory={handleUploadNewFile}
           dragTargetCategory={dragTargetCategory}
           onSetDragTargetCategory={setDragTargetCategory}
+          onCreateCategory={() => setNewCatOpen(true)}
+          onRequestDeleteCategory={handleRequestDeleteCategory}
+          canEdit={Boolean(user)}
         />
 
         {loading && visibleItems.length === 0 ? (
@@ -1201,6 +1319,7 @@ function CommandCenterApp() {
         onTogglePauseAgent={handleTogglePauseAgent}
         onAnalyzeActiveItem={handleAnalyzeActiveItem}
         onCreateNewNote={() => setNewNoteOpen(true)}
+        onCreateCategory={() => setNewCatOpen(true)}
         onToggleTheme={handleToggleTheme}
         onResetToPlatformVault={handleResetToPlatformVault}
         canEdit={Boolean(user)}
@@ -1267,6 +1386,127 @@ function CommandCenterApp() {
             </button>
           </div>
         </form>
+      </LightDismissDialog>
+
+      {/* Diálogo para crear nueva categoría */}
+      <LightDismissDialog
+        open={newCatOpen}
+        onClose={() => setNewCatOpen(false)}
+        title="Nueva categoría"
+        subtitle="Organiza archivos .md, multimedia, enlaces y relaciones en una nueva lista"
+        maxWidth="440px"
+      >
+        <form className="cc-new-note-form" onSubmit={handleSubmitNewCategory}>
+          <label className="cc-form-field">
+            <span>Nombre de la categoría</span>
+            <input
+              type="text"
+              className="keep-input"
+              value={newCatName}
+              onChange={(e) => setNewCatName(e.target.value)}
+              placeholder="Ej: 07 · Experimentos & Métricas"
+              autoFocus
+            />
+          </label>
+
+          <div className="cc-form-field">
+            <span>Color identificador</span>
+            <div className="cc-color-picker">
+              {KEEP_COLORS.map((c) => (
+                <button
+                  key={c.key}
+                  type="button"
+                  className={`cc-color-swatch ${newCatColor === c.key ? 'is-selected' : ''}`}
+                  style={{ backgroundColor: c.accent }}
+                  onClick={() => setNewCatColor(c.key)}
+                  title={c.label}
+                  aria-label={c.label}
+                />
+              ))}
+            </div>
+          </div>
+
+          <div className="cc-form-actions">
+            <button
+              type="button"
+              className="keep-btn keep-btn-tonal"
+              onClick={() => setNewCatOpen(false)}
+            >
+              Cancelar
+            </button>
+            <button type="submit" className="keep-btn keep-btn-primary" disabled={!newCatName.trim()}>
+              Crear categoría
+            </button>
+          </div>
+        </form>
+      </LightDismissDialog>
+
+      {/* Diálogo seguro para eliminar categoría */}
+      <LightDismissDialog
+        open={Boolean(deleteCatTarget)}
+        onClose={() => setDeleteCatTarget(null)}
+        title={deleteCatTarget ? `Eliminar "${deleteCatTarget.name}"` : 'Eliminar categoría'}
+        subtitle={
+          deleteCatTarget?.files?.length
+            ? `Esta categoría contiene ${deleteCatTarget.files.length} archivo(s). Elige qué hacer con ellos:`
+            : 'Esta categoría está vacía y se eliminará de Firestore.'
+        }
+        maxWidth="460px"
+      >
+        {deleteCatTarget && (
+          <form className="cc-new-note-form" onSubmit={handleConfirmDeleteCategory}>
+            {deleteCatTarget.files.length > 0 && (
+              <>
+                <label className="cc-form-field">
+                  <span>Acción sobre los archivos</span>
+                  <select
+                    className="keep-input"
+                    value={deleteCatMode}
+                    onChange={(e) => setDeleteCatMode(e.target.value)}
+                  >
+                    <option value="move">Mover archivos a otra categoría (recomendado)</option>
+                    <option value="purge">Eliminar también todos sus archivos</option>
+                  </select>
+                </label>
+
+                {deleteCatMode === 'move' && (
+                  <label className="cc-form-field">
+                    <span>Categoría destino</span>
+                    <select
+                      className="keep-input"
+                      value={deleteCatFallback}
+                      onChange={(e) => setDeleteCatFallback(e.target.value)}
+                    >
+                      {categories
+                        .filter((c) => c.name !== deleteCatTarget.name)
+                        .map((c) => (
+                          <option key={c.name} value={c.name}>
+                            {c.name}
+                          </option>
+                        ))}
+                      {categories.filter((c) => c.name !== deleteCatTarget.name).length === 0 && (
+                        <option value="General">General</option>
+                      )}
+                    </select>
+                  </label>
+                )}
+              </>
+            )}
+
+            <div className="cc-form-actions">
+              <button
+                type="button"
+                className="keep-btn keep-btn-tonal"
+                onClick={() => setDeleteCatTarget(null)}
+              >
+                Cancelar
+              </button>
+              <button type="submit" className="keep-btn cc-btn-reject">
+                Confirmar eliminación
+              </button>
+            </div>
+          </form>
+        )}
       </LightDismissDialog>
 
       {/* Modal de compartición (lazy-loaded) */}

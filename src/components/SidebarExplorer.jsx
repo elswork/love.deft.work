@@ -12,6 +12,7 @@ import {
   IconPlay,
   IconPlus,
   IconSearch,
+  IconTrash,
   IconUpload,
 } from './VaultIcons';
 
@@ -49,6 +50,9 @@ export default function SidebarExplorer({
   onDropFileOnCategory,
   dragTargetCategory,
   onSetDragTargetCategory,
+  onCreateCategory,
+  onRequestDeleteCategory,
+  canEdit,
 }) {
   return (
     <>
@@ -161,7 +165,20 @@ export default function SidebarExplorer({
         <section className="cc-vault-tree" aria-label="Listas de categorías">
           <div className="cc-section-header">
             <span className="cc-section-title">Bóveda Obsidian</span>
-            <span className="cc-mono-badge">{categories.length} cat</span>
+            <div className="cc-section-actions">
+              <span className="cc-mono-badge">{categories.length} cat</span>
+              {canEdit && (
+                <button
+                  type="button"
+                  className="cc-mini-icon-btn"
+                  onClick={onCreateCategory}
+                  title="Nueva categoría"
+                  aria-label="Nueva categoría"
+                >
+                  <IconPlus size={12} />
+                </button>
+              )}
+            </div>
           </div>
 
           <div className="cc-cat-scroll">
@@ -187,22 +204,36 @@ export default function SidebarExplorer({
                     }
                   }}
                 >
-                  <button
-                    type="button"
-                    className="cc-cat-trigger"
-                    onClick={() => onToggleCategory(cat.name)}
-                    aria-expanded={isOpen}
-                  >
-                    <span className="cc-cat-caret">{isOpen ? '▾' : '▸'}</span>
-                    <span
-                      className="cc-cat-swatch"
-                      style={{ backgroundColor: cat.accent }}
-                      aria-hidden="true"
-                    />
-                    <IconFolder size={13} />
-                    <span className="cc-cat-name">{cat.name}</span>
-                    <span className="cc-mono-count">{cat.files.length}</span>
-                  </button>
+                  <div className="cc-cat-header-row">
+                    <button
+                      type="button"
+                      className="cc-cat-trigger"
+                      onClick={() => onToggleCategory(cat.name)}
+                      aria-expanded={isOpen}
+                    >
+                      <span className="cc-cat-caret">{isOpen ? '▾' : '▸'}</span>
+                      <span
+                        className="cc-cat-swatch"
+                        style={{ backgroundColor: cat.accent }}
+                        aria-hidden="true"
+                      />
+                      <IconFolder size={13} />
+                      <span className="cc-cat-name">{cat.name}</span>
+                      <span className="cc-mono-count">{cat.files.length}</span>
+                    </button>
+
+                    {canEdit && (
+                      <button
+                        type="button"
+                        className="cc-cat-del-btn"
+                        onClick={() => onRequestDeleteCategory?.(cat)}
+                        title={`Eliminar categoría ${cat.name}`}
+                        aria-label={`Eliminar categoría ${cat.name}`}
+                      >
+                        <IconTrash size={12} />
+                      </button>
+                    )}
+                  </div>
 
                   {isOpen && (
                     <ul className="cc-file-list">
