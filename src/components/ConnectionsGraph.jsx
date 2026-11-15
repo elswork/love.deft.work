@@ -1,67 +1,56 @@
-import React, { useMemo } from 'react';
-import { getColorConfig, getCategoryIcon } from '../data/keep_palette';
-import { extractWikiLinks, resolveWikiTarget } from '../services/MarkdownVaultService';
+import React, { useMemo, useState } from 'react';
+import { getColorConfig } from '../data/keep_palette';
+import {
+  extractWikiLinks,
+  resolveWikiTarget,
+  getFileDisplayName,
+} from '../services/MarkdownVaultService';
 
 /**
- * Mapa visual interactivo (SVG) estilo Obsidian.md de conexiones entre archivos
- * ([[WikiLinks]], relaciones reificadas y referencias cruzadas entre categorías).
+ * Mapa visual interactivo (SVG) estilo estudio de conocimiento:
+ * muestra archivos (.md, multimedia, enlaces), Relaciones-Elemento reificadas
+ * y nodos generados/analizados por Agentes IA.
  */
 export default function ConnectionsGraph({
   items,
   categoriesMap,
   activeItemId,
   onSelectItem,
-  onSelectCategory,
 }) {
+  const [hoveredId, setHoveredId] = useState('');
+  const [filterMode, setFilterMode] = useState('all'); // 'all' | 'relations' | 'agent'
+
   const graph = useMemo(() => {
-    const referencedSet = new Set();
-    const linkPairs = [];
-
-    items.forEach((it) => {
-      const mdLinks = extractWikiLinks(it.markdownContent || '');
-      const resolvedWikiIds = mdLinks
-        .map((lnk) => resolveWikiTarget(lnk.target, items)?.id)
-        .filter(Boolean);
-      const targets = new Set([
-        ...(it.relatedIds || []),
-        ...resolvedWikiIds,
-        ...(it.sourceId ? [it.sourceId] : []),
-        ...(it.targetId ? [it.targetId] : []),
-      ]);
-
-      if (targets.size > 0 || it.extraCategories?.length > 0 || it.kind === 'relation') {
-        referencedSet.add(it.id);
-        targets.forEach((tId) => {
-          if (tId !== it.id) {
-            referencedSet.add(tId);
-            linkPairs.push([it.id, tId]);
-          }
-        });
+    const filteredBase = items.filter((it) => {
+      if (filterMode === 'relations') {
+        return it.kind === 'relation' || (it.relatedIds?.length || 0) > 0;
       }
+      if (filterMode === 'agent') {
+        return it.authorKind === 'agent' || it.authorKind === 'hybrid';
+      }
+      return true;
     });
 
-    const subset =
-      referencedSet.size >= 2
-        ? items.filter((it) => referencedSet.has(it.id)).slice(0, 32)
-        : items.slice(0, 20);
-
-    const width = 920;
-    const height = 460;
+    const subset = filteredBase.slice(0, 30);
+    const width = 980;
+    const height = 520;
     const cx = width / 2;
     const cy = height / 2;
-    const rx = 345;
-    const ry = 175;
+    const rx = 360;
+    const ry = 195;
 
     const nodes = subset.map((it, idx) => {
       const angle = (2 * Math.PI * idx) / Math.max(1, subset.length) - Math.PI / 2;
+      const isRel = it.kind === 'relation';
+      const radiusFactor = isRel ? 0.56 : idx % 2 === 0 ? 1 : 0.78;
       const color = getColorConfig(
         categoriesMap[it.category]?.colorKey || it.colorKey || it.category
       );
       return {
         ...it,
-        x: cx + rx * Math.cos(angle),
-        y: cy + ry * Math.sin(angle),
-        accent: color.accent,
+        x: cx + rx * radiusFactor * Math.cos(angle),
+        y: cy + ry * radiusFactor * Math.sin(angle),
+        accent: isRel ? '#8b5cf6' : color.accent,
       };
     });
 
@@ -69,121 +58,187 @@ export default function ConnectionsGraph({
     const edges = [];
     const seenPairs = new Set();
 
-    linkPairs.forEach(([srcId, dstId]) => {
-      const source = nodeById[srcId];
-      const target = nodeById[dstId];
-      if (!source || !target || source.id === target.id) return;
-      const pairKey = [source.id, target.id].sort().join('::');
-      if (seenPairs.has(pairKey)) return;
-      seenPairs.add(pairKey);
-      edges.push({
-        id: pairKey,
-        source,
-        target,
-        crossCategory: source.category !== target.category,
+    nodes.forEach((n) => {
+      const mdLinks = extractWikiLinks(n.markdownContent || '');
+      const resolvedWikiIds = mdLinks
+        .map((lnk) => resolveWikiTarget(lnk.target, items)?.id)
+        .filter(Boolean);
+      const targets = new Set([
+        ...(n.relatedIds || []),
+        ...resolvedWikiIds,
+        ...(n.sourceId ? [n.sourceId] : []),
+        ...(n.targetId ? [n.targetId] : []),
+      ]);
+
+      targets.forEach((targetId) => {
+        const target = nodeById[targetId];
+        if (!target || target.id === n.id) return;
+        const pairKey = [n.id, target.id].sort().join('::');
+        if (seenPairs.has(pairKey)) return;
+        seenPairs.add(pairKey);
+
+        // Punto de control suave hacia el centro para curvas Bézier elegantes
+        const mx = (n.x + target.x) / 2;
+        const my = (n.y + target.y) / 2;
+        const qx = mx * 0.85 + cx * 0.15;
+        const qy = my * 0.85 + cy * 0.15;
+
+        edges.push({
+          id: pairKey,
+          source: n,
+          target,
+          path: `M ${n.x} ${n.y} Q ${qx} ${qy} ${target.x} ${target.y}`,
+          isRelationEdge: n.kind === 'relation' || target.kind === 'relation',
+          crossCategory: n.category !== target.category,
+        });
       });
     });
 
     return { nodes, edges, width, height };
-  }, [items, categoriesMap]);
+  }, [items, categoriesMap, filterMode]);
+
+  const neighborIds = useMemo(() => {
+    const focus = hoveredId || activeItemId;
+    if (!focus) return null;
+    const set = new Set([focus]);
+    graph.edges.forEach((e) => {
+      if (e.source.id === focus) set.add(e.target.id);
+      if (e.target.id === focus) set.add(e.source.id);
+    });
+    return set;
+  }, [hoveredId, activeItemId, graph.edges]);
 
   if (graph.nodes.length === 0) {
     return (
-      <div className="keep-empty-state">
-        <p>Todavía no hay elementos suficientes para trazar el Mapa de Conexiones.</p>
+      <div className="vault-empty-card">
+        <p>No hay nodos que coincidan con este filtro en el grafo.</p>
       </div>
     );
   }
 
   return (
-    <div className="connections-graph-card">
-      <div className="connections-graph-header">
-        <div>
-          <h3>🕸️ Mapa de Conexiones entre Categorías y Elementos</h3>
-          <p>
-            Las líneas continuas enlazan elementos vinculados con <code>@relación</code> entre listas distintas. Pulsa cualquier nodo para inspeccionarlo o saltar a su lista.
-          </p>
+    <div className="studio-graph-card">
+      <div className="studio-graph-toolbar">
+        <div className="studio-segmented" role="group" aria-label="Filtrar nodos del grafo">
+          {[
+            { id: 'all', label: 'Todos los archivos' },
+            { id: 'relations', label: 'Con relaciones' },
+            { id: 'agent', label: 'Asistidos por Agente' },
+          ].map((m) => (
+            <button
+              key={m.id}
+              type="button"
+              className={`studio-seg-btn ${filterMode === m.id ? 'active' : ''}`}
+              onClick={() => setFilterMode(m.id)}
+            >
+              {m.label}
+            </button>
+          ))}
         </div>
-        <span className="keep-badge">
-          {graph.edges.length} vínculos activos · {graph.nodes.length} nodos
-        </span>
+
+        <div className="studio-graph-legend">
+          <span><i className="legend-dot is-file" /> Archivo</span>
+          <span><i className="legend-dot is-rel" /> Relación-Elemento</span>
+          <span><i className="legend-dot is-agent" /> Agente IA</span>
+        </div>
       </div>
 
-      <div className="connections-svg-wrap">
-        <svg
-          viewBox={`0 0 ${graph.width} ${graph.height}`}
-          className="connections-svg"
-          role="img"
-          aria-label="Grafo de conexiones entre elementos de distintas categorías"
-        >
-          {/* Vínculos */}
-          {graph.edges.map((edge) => {
-            const isHighlighted =
-              activeItemId &&
-              (edge.source.id === activeItemId || edge.target.id === activeItemId);
-            const mx = (edge.source.x + edge.target.x) / 2;
-            const my = (edge.source.y + edge.target.y) / 2 - 22;
-            return (
-              <path
-                key={edge.id}
-                d={`M ${edge.source.x} ${edge.source.y} Q ${mx} ${my} ${edge.target.x} ${edge.target.y}`}
-                fill="none"
-                stroke={isHighlighted ? '#10b981' : edge.source.accent}
-                strokeWidth={isHighlighted ? 3 : 1.8}
-                strokeDasharray={edge.crossCategory ? undefined : '4 4'}
-                opacity={isHighlighted ? 0.95 : 0.55}
-              />
-            );
-          })}
+      <svg
+        viewBox={`0 0 ${graph.width} ${graph.height}`}
+        className="studio-graph-svg"
+        role="img"
+        aria-label="Grafo interactivo de archivos y relaciones"
+      >
+        <defs>
+          <pattern id="studio-grid" width="24" height="24" patternUnits="userSpaceOnUse">
+            <circle cx="1.5" cy="1.5" r="1" fill="currentColor" opacity="0.12" />
+          </pattern>
+        </defs>
 
-          {/* Nodos */}
-          {graph.nodes.map((node) => {
-            const isSelected = activeItemId === node.id;
-            const label =
-              node.title.length > 22 ? `${node.title.slice(0, 20)}…` : node.title;
-            const catIcon = getCategoryIcon(node.category);
-            return (
-              <g
-                key={node.id}
-                transform={`translate(${node.x}, ${node.y})`}
-                className="graph-node-group"
-                onClick={() => onSelectItem && onSelectItem(node)}
-                style={{ cursor: 'pointer' }}
-              >
+        <rect width={graph.width} height={graph.height} fill="url(#studio-grid)" rx="12" />
+
+        {graph.edges.map((edge) => {
+          const highlighted =
+            !neighborIds ||
+            (neighborIds.has(edge.source.id) && neighborIds.has(edge.target.id));
+          return (
+            <path
+              key={edge.id}
+              d={edge.path}
+              fill="none"
+              stroke={
+                edge.isRelationEdge
+                  ? '#8b5cf6'
+                  : edge.crossCategory
+                  ? '#06b6d4'
+                  : 'currentColor'
+              }
+              strokeWidth={highlighted ? 2 : 1}
+              strokeDasharray={edge.isRelationEdge ? '5 4' : undefined}
+              opacity={highlighted ? 0.65 : 0.12}
+            />
+          );
+        })}
+
+        {graph.nodes.map((node) => {
+          const isActive = node.id === activeItemId || node.id === hoveredId;
+          const isDimmed = neighborIds && !neighborIds.has(node.id);
+          const isAgent = node.authorKind === 'agent' || node.authorKind === 'hybrid';
+          const isRel = node.kind === 'relation';
+
+          return (
+            <g
+              key={node.id}
+              transform={`translate(${node.x}, ${node.y})`}
+              className="studio-graph-node"
+              opacity={isDimmed ? 0.25 : 1}
+              onMouseEnter={() => setHoveredId(node.id)}
+              onMouseLeave={() => setHoveredId('')}
+              onClick={() => onSelectItem && onSelectItem(node)}
+              style={{ cursor: 'pointer' }}
+            >
+              {isAgent && (
                 <circle
-                  r={isSelected ? 22 : 17}
-                  fill={node.accent}
-                  opacity={isSelected ? 0.28 : 0.16}
+                  r={isActive ? 22 : 17}
+                  fill="none"
+                  stroke="#22d3ee"
+                  strokeWidth="1.5"
+                  strokeDasharray="3 3"
                 />
-                <circle
-                  r={isSelected ? 13 : 10}
+              )}
+
+              {isRel ? (
+                <rect
+                  x={-11}
+                  y={-11}
+                  width={22}
+                  height={22}
+                  rx={6}
+                  transform="rotate(45)"
                   fill={node.accent}
                   stroke="#ffffff"
-                  strokeWidth={isSelected ? 2.5 : 1.5}
+                  strokeWidth={isActive ? 2.5 : 1.5}
                 />
-                <text
-                  y={26}
-                  textAnchor="middle"
-                  className="graph-node-title"
-                >
-                  {label}
-                </text>
-                <text
-                  y={-16}
-                  textAnchor="middle"
-                  className="graph-node-cat"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    if (onSelectCategory) onSelectCategory(node.category);
-                  }}
-                >
-                  {catIcon} {node.category}
-                </text>
-              </g>
-            );
-          })}
-        </svg>
-      </div>
+              ) : (
+                <circle
+                  r={isActive ? 14 : 10}
+                  fill={node.accent}
+                  stroke="#ffffff"
+                  strokeWidth={isActive ? 2.5 : 1.5}
+                />
+              )}
+
+              <text
+                y={isRel ? 26 : 24}
+                textAnchor="middle"
+                className="studio-graph-label"
+              >
+                {getFileDisplayName(node).slice(0, 24)}
+              </text>
+            </g>
+          );
+        })}
+      </svg>
     </div>
   );
 }

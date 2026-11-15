@@ -6,3 +6,5 @@ El objetivo es crear un sistema que me permita gestionar, relacionar y analizar 
 En realidad todos los elementos serán ficheros, ya que los elementos de texto serán ficheros .md y los elementos multimedia serán ficheros .png .mp4 .pdf etc.
 
 Los elementos se podrán relacionar entre sí mediante enlaces, por ejemplo un elemento .md podrá tener enlaces a otros elementos .md, .png, .mp4, .pdf etc. de la misma manera estos podrán tener enlaces a otros elementos.
+
+No me gusta esteticamente como ha quedado, me gustaria crear un sistema en el que humanos y agentes puedan colaborar para gestionar, relacionar y analizar información de manera eficiente. Por favor, rediseña la aplicación para que sea más atractiva y funcional.

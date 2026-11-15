@@ -18,17 +18,32 @@ import LightDismissDialog from './components/LightDismissDialog';
 import ShareModal from './components/ShareModal';
 import ConnectionsGraph from './components/ConnectionsGraph';
 import MarkdownVaultView from './components/MarkdownVaultView';
+import {
+  IconVault,
+  IconFileKind,
+  IconGraph,
+  IconAgent,
+  IconHuman,
+  IconSearch,
+  IconUpload,
+  IconShare,
+  IconStar,
+  IconTrash,
+  IconRelation,
+} from './components/VaultIcons';
 import EnrichmentService from './services/EnrichmentService';
 import AttachmentService from './services/AttachmentService';
+import AgentService from './services/AgentService';
 import {
   getFileDisplayName,
+  getFileExtension,
   getFileBadge,
   extractWikiLinks,
   resolveWikiTarget,
   buildInitialMarkdown,
   computeVaultConnections,
 } from './services/MarkdownVaultService';
-import { KEEP_COLORS, getColorConfig, getCategoryIcon } from './data/keep_palette';
+import { KEEP_COLORS, getColorConfig } from './data/keep_palette';
 import { AuthProvider, useAuth } from './context/AuthContext';
 
 function useVaultData() {
@@ -76,46 +91,55 @@ function useVaultData() {
   return { items, setItems, categoriesDocs, setCategoriesDocs, loading };
 }
 
-function ObsidianVaultBoard() {
+function StudioVaultApp() {
   const { user, loginWithGoogle, logout } = useAuth();
   const { items, setItems, categoriesDocs, setCategoriesDocs, loading } = useVaultData();
 
   const [renderedScheme, setRenderedScheme] = useState(() => {
-    if (typeof window === 'undefined') return 'light';
+    if (typeof window === 'undefined') return 'dark';
     const meta = document.querySelector('meta[name="color-scheme"]')?.content;
     if (meta === 'dark' || meta === 'light') return meta;
     return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
   });
 
-  // Navegación estilo Obsidian
+  // Navegación principal
   const [activeItemId, setActiveItemId] = useState('');
-  const [editorMode, setEditorMode] = useState('split'); // 'read' | 'edit' | 'split'
-  const [viewMode, setViewMode] = useState('vault'); // 'vault' | 'graph'
+  const [editorMode, setEditorMode] = useState('read'); // 'read' | 'split' | 'edit'
+  const [viewMode, setViewMode] = useState('vault'); // 'vault' | 'analysis' | 'graph'
+  const [inspectorTab, setInspectorTab] = useState('connections'); // 'connections' | 'agent'
   const [searchQuery, setSearchQuery] = useState('');
-  const [fileKindFilter, setFileKindFilter] = useState('all'); // 'all' | 'markdown' | 'media' | 'link' | 'relation'
+  const [fileKindFilter, setFileKindFilter] = useState('all');
   const [collapsedCats, setCollapsedCats] = useState({});
 
-  // Borrador del editor Markdown activo
+  // Borrador del editor Markdown
   const [draftTitle, setDraftTitle] = useState('');
   const [draftMarkdown, setDraftMarkdown] = useState('');
   const [draftUrl, setDraftUrl] = useState('');
   const [dirty, setDirty] = useState(false);
   const [savingDraft, setSavingDraft] = useState(false);
 
-  // Autocompletado [[WikiLink]] en el editor
+  // Autocompletado [[WikiLink]]
   const [wikiSuggestQuery, setWikiSuggestQuery] = useState('');
   const [showWikiSuggest, setShowWikiSuggest] = useState(false);
   const editorTextareaRef = useRef(null);
 
-  // Subida rápida de archivos
+  // Subida de archivos
   const [uploadProgress, setUploadProgress] = useState(null);
   const [uploadError, setUploadError] = useState('');
   const quickFileInputRef = useRef(null);
   const attachFileInputRef = useRef(null);
 
-  // Panel de nueva relación-elemento
+  // Relación-Elemento manual
   const [relTargetId, setRelTargetId] = useState('');
   const [relLabel, setRelLabel] = useState('conecta con');
+
+  // Agente IA Colaborador
+  const [agentBusy, setAgentBusy] = useState(false);
+  const [agentAnalysisByItem, setAgentAnalysisByItem] = useState({});
+  const [synthScope, setSynthScope] = useState('ALL');
+  const [synthQuestion, setSynthQuestion] = useState('');
+  const [synthBusy, setSynthBusy] = useState(false);
+  const [synthResult, setSynthResult] = useState(null);
 
   // Modales
   const [shareTarget, setShareTarget] = useState(null);
@@ -130,16 +154,15 @@ function ObsidianVaultBoard() {
   const [newCatForm, setNewCatForm] = useState({
     name: '',
     icon: '📁',
-    colorKey: 'emerald',
+    colorKey: 'indigo',
     note: '',
     isPublic: true,
   });
 
-  // Drag & Drop entre listas
   const [dragItemId, setDragItemId] = useState('');
   const searchInputRef = useRef(null);
 
-  // Tema claro/oscuro sincronizado
+  // Sincronía tema claro/oscuro
   useEffect(() => {
     const mql = window.matchMedia('(prefers-color-scheme: dark)');
     const syncScheme = () => {
@@ -187,7 +210,7 @@ function ObsidianVaultBoard() {
     setRenderedScheme(target);
   };
 
-  // Atajos de teclado Ctrl+K / '/' para buscar, Ctrl+S para guardar
+  // Atajos de teclado
   useEffect(() => {
     const onKeyDown = (e) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
@@ -205,7 +228,6 @@ function ObsidianVaultBoard() {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, []);
 
-  // Filtrado por visibilidad (público / propietario / colaborador)
   const visibleItems = useMemo(() => {
     return items.filter((it) => {
       if (it.isPublic !== false) return true;
@@ -223,7 +245,7 @@ function ObsidianVaultBoard() {
     [visibleItems]
   );
 
-  // Deep-link inicial (?item=... o ?cat=...) o seleccionar primer archivo
+  // Selección inicial / deep-link
   useEffect(() => {
     if (visibleItems.length === 0) return;
     const params = new URLSearchParams(window.location.search);
@@ -240,7 +262,6 @@ function ObsidianVaultBoard() {
 
   const activeItem = itemsById[activeItemId] || null;
 
-  // Sincronizar borrador al cambiar de archivo activo
   useEffect(() => {
     if (!activeItem) {
       setDraftTitle('');
@@ -257,7 +278,6 @@ function ObsidianVaultBoard() {
     setUploadError('');
   }, [activeItemId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Filtrado de archivos por búsqueda y tipo
   const filteredFiles = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     return visibleItems.filter((it) => {
@@ -271,6 +291,9 @@ function ObsidianVaultBoard() {
       }
       if (fileKindFilter === 'link' && badge.kind !== 'link') return false;
       if (fileKindFilter === 'relation' && badge.kind !== 'relation') return false;
+      if (fileKindFilter === 'agent' && it.authorKind !== 'agent' && it.authorKind !== 'hybrid') {
+        return false;
+      }
 
       if (!q) return true;
       return (
@@ -283,7 +306,6 @@ function ObsidianVaultBoard() {
     });
   }, [visibleItems, searchQuery, fileKindFilter]);
 
-  // Construcción de Categorías como Listas de Archivos (todos los tipos)
   const categoryLists = useMemo(() => {
     const map = new Map();
 
@@ -293,7 +315,6 @@ function ObsidianVaultBoard() {
         const color = getColorConfig(meta.colorKey || name);
         map.set(name, {
           name,
-          icon: meta.icon || getCategoryIcon(name),
           colorKey: color.key,
           accent: color.accent,
           note: meta.note || '',
@@ -312,7 +333,6 @@ function ObsidianVaultBoard() {
     filteredFiles.forEach((it) => {
       const primary = ensureCat(it.category || 'General');
       primary.files.push({ item: it, isCrossRef: false });
-
       (it.extraCategories || []).forEach((xCat) => {
         if (xCat && xCat !== it.category) {
           ensureCat(xCat).files.push({ item: it, isCrossRef: true });
@@ -345,20 +365,35 @@ function ObsidianVaultBoard() {
     return list;
   }, [filteredFiles, categoriesDocs, user]);
 
-  // Conexiones (salientes, backlinks, relaciones reificadas) del archivo activo
   const activeConnections = useMemo(
     () => computeVaultConnections(activeItem, visibleItems),
     [activeItem, visibleItems]
   );
 
-  // Total de conexiones en la bóveda
-  const totalConnectionsCount = useMemo(() => {
-    let count = 0;
+  // Métricas analíticas de la bóveda para la Mesa IA
+  const vaultAnalytics = useMemo(() => {
+    let totalLinks = 0;
+    const orphans = [];
+    const pendingReviews = [];
+    const agentDocs = [];
+
     visibleItems.forEach((it) => {
-      const wikis = extractWikiLinks(it.markdownContent || '');
-      count += wikis.length + (it.relatedIds?.length || 0);
+      const conns = computeVaultConnections(it, visibleItems);
+      const degree = conns.outgoing.length + conns.backlinks.length + conns.relations.length;
+      totalLinks += conns.outgoing.length;
+      if (degree === 0) orphans.push(it);
+      if (it.reviewStatus === 'pending') pendingReviews.push(it);
+      if (it.authorKind === 'agent' || it.authorKind === 'hybrid') agentDocs.push(it);
     });
-    return count;
+
+    return {
+      totalFiles: visibleItems.length,
+      totalLinks,
+      orphans,
+      pendingReviews,
+      agentDocs,
+      relationNodes: visibleItems.filter((it) => it.kind === 'relation').length,
+    };
   }, [visibleItems]);
 
   // Mutaciones Firestore
@@ -398,7 +433,6 @@ function ObsidianVaultBoard() {
     }
   };
 
-  // Guardar cambios del editor Markdown activo
   const handleSaveActiveDraft = async () => {
     if (!activeItem || !user || savingDraft) return;
     setSavingDraft(true);
@@ -426,6 +460,7 @@ function ObsidianVaultBoard() {
         note: firstParagraph.replace(/^[-*>\s]+/, '').slice(0, 140),
         description: firstParagraph.replace(/^[-*>\s]+/, '').slice(0, 140),
         relatedIds: mergedRelatedIds,
+        authorKind: activeItem.authorKind === 'agent' ? 'hybrid' : activeItem.authorKind,
       });
       setDirty(false);
     } finally {
@@ -433,7 +468,6 @@ function ObsidianVaultBoard() {
     }
   };
 
-  // Crear un nuevo archivo .md en una categoría (o desde un WikiLink inexistente)
   const createMarkdownFile = async ({
     title,
     category = 'Anticitera',
@@ -444,6 +478,9 @@ function ObsidianVaultBoard() {
     targetId = '',
     relationLabel = '',
     attachment = null,
+    authorKind = 'human',
+    authorName = '',
+    reviewStatus = 'verified',
     isPublic = true,
   }) => {
     if (!user) {
@@ -453,7 +490,7 @@ function ObsidianVaultBoard() {
     const cleanTitle = String(title || 'Nueva nota').trim();
     const initialMd =
       markdownContent ||
-      `# ${cleanTitle}\n\nEscribe aquí tu nota en Markdown. Usa \`[[Nombre]]\` para enlazar otros archivos o \`![[archivo]]\` para incrustarlos.\n`;
+      `# ${cleanTitle}\n\nEscribe aquí tu análisis en Markdown. Usa \`[[Nombre]]\` para enlazar archivos o \`![[archivo]]\` para incrustar multimedia.\n`;
 
     const payload = {
       title: cleanTitle,
@@ -463,6 +500,9 @@ function ObsidianVaultBoard() {
       sourceId,
       targetId,
       relationLabel,
+      authorKind,
+      authorName: authorName || user.displayName || user.email || '',
+      reviewStatus,
       url,
       domain: url ? EnrichmentService.extractDomain(url) : '',
       favicon: url ? EnrichmentService.getFaviconUrl(url) : '',
@@ -491,8 +531,7 @@ function ObsidianVaultBoard() {
     return ref.id;
   };
 
-  // Subir cualquier tipo de archivo (.md, .png, .pdf, .mp4, etc.) como elemento nuevo o adjunto
-  const handleUploadNewFile = async (file, targetCategory = 'Archivo & Notas') => {
+  const handleUploadNewFile = async (file, targetCategory = 'Multimedia & PDF') => {
     if (!file) return;
     if (!user) {
       await loginWithGoogle();
@@ -529,7 +568,6 @@ function ObsidianVaultBoard() {
     }
   };
 
-  // Adjuntar o reemplazar archivo dentro del elemento actualmente abierto
   const handleAttachToActiveItem = async (file) => {
     if (!file || !activeItem || !user) return;
     setUploadError('');
@@ -552,38 +590,92 @@ function ObsidianVaultBoard() {
     }
   };
 
-  // Crear Relación-Elemento (.md reificado entre activo y destino)
-  const handleCreateRelationElement = async (e) => {
-    e.preventDefault();
-    if (!activeItem || !relTargetId || !user) return;
-    const target = itemsById[relTargetId];
-    if (!target) return;
-
-    const label = relLabel.trim() || 'conecta con';
-    const relTitle = `${activeItem.title} — ${label} → ${target.title}`;
+  const createRelationBetween = async ({
+    source,
+    target,
+    label = 'conecta con',
+    authorKind = 'human',
+    authorName = '',
+    reviewStatus = 'verified',
+    reason = '',
+  }) => {
+    if (!source || !target) return;
+    const cleanLabel = label.trim() || 'conecta con';
+    const relTitle = `${source.title} — ${cleanLabel} → ${target.title}`;
     const relMd = [
-      `# Relación: ${activeItem.title} ↔ ${target.title}`,
+      `# Relación: ${source.title} ↔ ${target.title}`,
       '',
-      `> **Tipo de relación**: \`${label}\``,
+      `> **Tipo de relación**: \`${cleanLabel}\``,
       '',
-      `- **Origen**: [[${activeItem.title}]]`,
+      `- **Origen**: [[${source.title}]]`,
       `- **Destino**: [[${target.title}]]`,
       '',
       '## Análisis de la conexión',
-      `Explica aquí por qué **[[${activeItem.title}]]** *${label}* **[[${target.title}]]** y adjunta evidencias si es necesario.`,
+      reason ||
+        `Explica aquí por qué **[[${source.title}]]** *${cleanLabel}* **[[${target.title}]]** y adjunta evidencias si es necesario.`,
       '',
     ].join('\n');
 
     await createMarkdownFile({
       title: relTitle,
-      category: activeItem.category,
+      category: source.category,
       markdownContent: relMd,
       kind: 'relation',
-      sourceId: activeItem.id,
+      sourceId: source.id,
       targetId: target.id,
-      relationLabel: label,
+      relationLabel: cleanLabel,
+      authorKind,
+      authorName,
+      reviewStatus,
+    });
+  };
+
+  const handleCreateRelationElement = async (e) => {
+    e.preventDefault();
+    if (!activeItem || !relTargetId || !user) return;
+    const target = itemsById[relTargetId];
+    if (!target) return;
+    await createRelationBetween({
+      source: activeItem,
+      target,
+      label: relLabel,
     });
     setRelTargetId('');
+  };
+
+  const handleRunAgentItemAnalysis = async () => {
+    if (!activeItem || agentBusy) return;
+    setAgentBusy(true);
+    setInspectorTab('agent');
+    try {
+      const result = await AgentService.analyzeItemWithAgent(activeItem, visibleItems);
+      setAgentAnalysisByItem((prev) => ({ ...prev, [activeItem.id]: result }));
+    } finally {
+      setAgentBusy(false);
+    }
+  };
+
+  const handleRunVaultSynthesis = async (e) => {
+    if (e) e.preventDefault();
+    if (!synthQuestion.trim() || synthBusy) return;
+    setSynthBusy(true);
+    try {
+      const scopeItems =
+        synthScope === 'ALL'
+          ? visibleItems
+          : visibleItems.filter(
+              (it) => it.category === synthScope || (it.extraCategories || []).includes(synthScope)
+            );
+      const label = synthScope === 'ALL' ? 'Toda la bóveda' : `Categoría: ${synthScope}`;
+      const res = await AgentService.synthesizeVaultQuestion(
+        synthQuestion.trim(),
+        scopeItems,
+        label
+      );
+      setSynthResult({ ...res, category: synthScope === 'ALL' ? 'Anticitera' : synthScope });
+    } finally {
+      setSynthBusy(false);
+    }
   };
 
   const handleDeleteItem = async (it) => {
@@ -600,7 +692,6 @@ function ObsidianVaultBoard() {
     }
   };
 
-  // Autocompletado [[ en el editor Markdown
   const handleEditorChange = (val) => {
     setDraftMarkdown(val);
     setDirty(true);
@@ -633,8 +724,7 @@ function ObsidianVaultBoard() {
     const before = draftMarkdown.slice(0, pos);
     const after = draftMarkdown.slice(pos);
     const replacedBefore = before.replace(/\[\[([^\]\n]*)$/, token);
-    const nextVal = replacedBefore + after;
-    setDraftMarkdown(nextVal);
+    setDraftMarkdown(replacedBefore + after);
     setDirty(true);
     setShowWikiSuggest(false);
     requestAnimationFrame(() => ta.focus());
@@ -663,46 +753,47 @@ function ObsidianVaultBoard() {
   };
 
   const activeBadge = activeItem ? getFileBadge(activeItem) : null;
+  const activeAgentReport = activeItem ? agentAnalysisByItem[activeItem.id] : null;
 
   return (
-    <div className="obsidian-app">
+    <div className="studio-app">
       {/* =================================================================
-          HEADER DE BÓVEDA OBSIDIAN
+          BARRA SUPERIOR TIPO COMMAND STUDIO
       ================================================================= */}
-      <header className="obsidian-topbar">
-        <div className="obsidian-brand-group">
-          <div className="obsidian-logo-mark" aria-hidden="true">
-            ◈
+      <header className="studio-topbar">
+        <div className="studio-brand">
+          <div className="studio-logo" aria-hidden="true">
+            <IconVault size={18} />
           </div>
-          <div>
-            <div className="obsidian-brand-row">
-              <h1 className="obsidian-brand-title">love.deft.work</h1>
-              <span className="obsidian-vault-pill">Bóveda Obsidian</span>
+          <div className="studio-brand-text">
+            <div className="studio-brand-title-row">
+              <h1 className="studio-brand-title">love.deft.work</h1>
+              <span className="studio-collab-badge">
+                <IconAgent size={12} /> Humano + Agentes
+              </span>
             </div>
-            <p className="obsidian-brand-sub">
-              {visibleItems.length} archivos · {totalConnectionsCount} enlaces ·{' '}
-              {categoryLists.length} listas
+            <p className="studio-brand-metrics">
+              {vaultAnalytics.totalFiles} archivos · {vaultAnalytics.totalLinks} enlaces ·{' '}
+              {vaultAnalytics.relationNodes} relaciones
             </p>
           </div>
         </div>
 
-        <search className="obsidian-search-wrap">
-          <span className="obsidian-search-icon" aria-hidden="true">
-            🔍
-          </span>
+        <search className="studio-search">
+          <IconSearch size={15} />
           <input
             ref={searchInputRef}
             type="search"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Buscar archivos, .md, etiquetas… (Ctrl+K)"
-            className="obsidian-search-input"
-            aria-label="Buscar archivos en la bóveda"
+            placeholder="Buscar archivos .md, multimedia, relaciones… (Ctrl+K)"
+            className="studio-search-input"
+            aria-label="Buscar en la bóveda"
           />
           {searchQuery && (
             <button
               type="button"
-              className="keep-icon-btn-sm"
+              className="studio-ghost-icon"
               onClick={() => setSearchQuery('')}
               aria-label="Limpiar búsqueda"
             >
@@ -711,27 +802,37 @@ function ObsidianVaultBoard() {
           )}
         </search>
 
-        <div className="obsidian-topbar-actions">
-          <div className="obsidian-segmented" role="group" aria-label="Vista principal">
+        <div className="studio-topbar-right">
+          <nav className="studio-segmented" aria-label="Vistas del sistema">
             <button
               type="button"
-              className={`obsidian-seg-btn ${viewMode === 'vault' ? 'active' : ''}`}
+              className={`studio-seg-btn ${viewMode === 'vault' ? 'active' : ''}`}
               onClick={() => setViewMode('vault')}
             >
-              📂 Bóveda
+              <IconVault size={14} /> Bóveda
             </button>
             <button
               type="button"
-              className={`obsidian-seg-btn ${viewMode === 'graph' ? 'active' : ''}`}
+              className={`studio-seg-btn ${viewMode === 'analysis' ? 'active' : ''}`}
+              onClick={() => setViewMode('analysis')}
+            >
+              <IconAgent size={14} /> Mesa IA
+              {vaultAnalytics.pendingReviews.length > 0 && (
+                <span className="studio-count-dot">{vaultAnalytics.pendingReviews.length}</span>
+              )}
+            </button>
+            <button
+              type="button"
+              className={`studio-seg-btn ${viewMode === 'graph' ? 'active' : ''}`}
               onClick={() => setViewMode('graph')}
             >
-              🕸️ Grafo
+              <IconGraph size={14} /> Grafo
             </button>
-          </div>
+          </nav>
 
           <button
             type="button"
-            className="keep-btn keep-btn-primary"
+            className="studio-btn studio-btn-primary"
             onClick={() => {
               setNewNoteForm((f) => ({
                 ...f,
@@ -740,27 +841,24 @@ function ObsidianVaultBoard() {
               setNewNoteModalOpen(true);
             }}
           >
-            + Nuevo .md
+            + Nota .md
           </button>
 
           <label
-            htmlFor="vault-quick-upload"
-            className="keep-btn keep-btn-soft obsidian-upload-btn"
+            htmlFor="studio-quick-upload"
+            className="studio-btn studio-btn-secondary"
             title="Subir .md, .png, .pdf, .mp4, .svg…"
           >
-            📎 Subir archivo
+            <IconUpload size={14} /> Subir
             <input
               ref={quickFileInputRef}
-              id="vault-quick-upload"
+              id="studio-quick-upload"
               type="file"
               className="keep-sr-only"
               onChange={(e) => {
                 const file = e.target.files?.[0];
                 if (file) {
-                  handleUploadNewFile(
-                    file,
-                    activeItem?.category || 'Archivo & Notas'
-                  );
+                  handleUploadNewFile(file, activeItem?.category || 'Multimedia & PDF');
                 }
                 e.target.value = '';
               }}
@@ -769,9 +867,9 @@ function ObsidianVaultBoard() {
 
           <button
             type="button"
-            className="keep-icon-btn"
+            className="studio-icon-btn"
             onClick={toggleColorScheme}
-            title={renderedScheme === 'dark' ? 'Modo claro' : 'Modo oscuro'}
+            title={renderedScheme === 'dark' ? 'Cambiar a modo claro' : 'Cambiar a modo oscuro'}
             aria-label="Cambiar tema claro/oscuro"
           >
             {renderedScheme === 'dark' ? '☀️' : '🌙'}
@@ -780,26 +878,24 @@ function ObsidianVaultBoard() {
           {user ? (
             <button
               type="button"
-              className="keep-user-pill"
+              className="studio-user-pill"
               onClick={logout}
-              title={`Conectado como ${user.email} · Cerrar sesión`}
+              title={`${user.email} · Cerrar sesión`}
             >
               {user.photoURL ? (
-                <img src={user.photoURL} alt="" className="keep-avatar" />
+                <img src={user.photoURL} alt="" className="studio-avatar" />
               ) : (
-                <span>👤</span>
+                <IconHuman size={14} />
               )}
-              <span className="keep-user-name">
-                {user.displayName?.split(' ')[0] || 'Salir'}
-              </span>
+              <span>{user.displayName?.split(' ')[0] || 'Cuenta'}</span>
             </button>
           ) : (
             <button
               type="button"
-              className="keep-btn keep-btn-primary"
+              className="studio-btn studio-btn-primary"
               onClick={loginWithGoogle}
             >
-              Entrar con Google
+              Entrar
             </button>
           )}
         </div>
@@ -809,7 +905,7 @@ function ObsidianVaultBoard() {
         <div className="obsidian-upload-banner" role="status" aria-live="polite">
           {uploadProgress !== null && (
             <div className="keep-upload-progress-row">
-              <span>Subiendo archivo…</span>
+              <span>Subiendo archivo a la bóveda…</span>
               <progress
                 className="keep-upload-progress"
                 value={uploadProgress}
@@ -824,24 +920,24 @@ function ObsidianVaultBoard() {
       )}
 
       {/* =================================================================
-          CUERPO PRINCIPAL: GRAFO GLOBAL O WORKSPACE OBSIDIAN DE 3 PANELES
+          VISTAS: GRAFO / MESA IA / BÓVEDA DE 3 PANELES
       ================================================================= */}
       {viewMode === 'graph' ? (
-        <main className="obsidian-graph-stage">
-          <div className="obsidian-graph-header">
+        <main className="studio-stage-wide">
+          <div className="studio-stage-head">
             <div>
-              <h2>🕸️ Grafo de la Bóveda</h2>
+              <h2>Grafo de Conocimiento Humano + Agentes</h2>
               <p>
-                Nodos de archivo (<code>.md</code>, multimedia, enlaces) y{' '}
-                <strong>Relaciones-Elemento</strong> conectadas por <code>[[WikiLinks]]</code>.
+                Explora cómo se enlazan los archivos <code>.md</code>, recursos multimedia y{' '}
+                <strong>Relaciones-Elemento</strong> en todas las categorías.
               </p>
             </div>
             <button
               type="button"
-              className="keep-btn keep-btn-soft"
+              className="studio-btn studio-btn-secondary"
               onClick={() => setViewMode('vault')}
             >
-              Volver al editor
+              Volver a la Bóveda
             </button>
           </div>
           <ConnectionsGraph
@@ -849,41 +945,243 @@ function ObsidianVaultBoard() {
             categoriesMap={categoriesDocs}
             activeItemId={activeItemId}
             onSelectItem={(it) => openVaultItem(it)}
-            onSelectCategory={() => setViewMode('vault')}
           />
         </main>
+      ) : viewMode === 'analysis' ? (
+        <main className="studio-stage-wide">
+          <div className="studio-stage-head">
+            <div>
+              <h2>Mesa de Análisis Colaborativo (Humano + Agentes)</h2>
+              <p>
+                Sintetiza conocimiento entre categorías, detecta archivos aislados y revisa
+                propuestas generadas por agentes antes de consolidarlas.
+              </p>
+            </div>
+            <button
+              type="button"
+              className="studio-btn studio-btn-secondary"
+              onClick={() => setViewMode('vault')}
+            >
+              Volver a la Bóveda
+            </button>
+          </div>
+
+          <section className="studio-kpi-grid" aria-label="Métricas de la bóveda">
+            <article className="studio-kpi-card">
+              <span className="studio-kpi-label">Archivos en Bóveda</span>
+              <strong className="studio-kpi-value">{vaultAnalytics.totalFiles}</strong>
+            </article>
+            <article className="studio-kpi-card">
+              <span className="studio-kpi-label">Relaciones-Elemento</span>
+              <strong className="studio-kpi-value">{vaultAnalytics.relationNodes}</strong>
+            </article>
+            <article className="studio-kpi-card">
+              <span className="studio-kpi-label">Archivos sin conexiones</span>
+              <strong className="studio-kpi-value">{vaultAnalytics.orphans.length}</strong>
+            </article>
+            <article className="studio-kpi-card">
+              <span className="studio-kpi-label">Notas con Agente IA</span>
+              <strong className="studio-kpi-value">{vaultAnalytics.agentDocs.length}</strong>
+            </article>
+          </section>
+
+          <div className="studio-analysis-grid">
+            <section className="studio-panel-card">
+              <div className="studio-panel-card-head">
+                <IconAgent size={18} />
+                <h3>Síntesis Asistida por Agente</h3>
+              </div>
+              <p className="studio-muted">
+                Formula una pregunta o elige una plantilla para que el agente analice tus archivos
+                y redacte una nueva nota <code>.md</code> con enlaces <code>[[...]]</code>.
+              </p>
+
+              <div className="studio-prompt-chips">
+                {[
+                  'Sintetiza los conceptos clave y cómo se conectan entre categorías',
+                  'Detecta huecos de evidencia o archivos que deberían relacionarse',
+                  'Propón una estructura de mapa conceptual para esta lista',
+                ].map((tpl) => (
+                  <button
+                    key={tpl}
+                    type="button"
+                    className="studio-chip-btn"
+                    onClick={() => setSynthQuestion(tpl)}
+                  >
+                    {tpl}
+                  </button>
+                ))}
+              </div>
+
+              <form onSubmit={handleRunVaultSynthesis} className="studio-synth-form">
+                <div className="studio-synth-controls">
+                  <select
+                    value={synthScope}
+                    onChange={(e) => setSynthScope(e.target.value)}
+                    className="studio-select"
+                    aria-label="Ámbito de análisis"
+                  >
+                    <option value="ALL">Toda la bóveda ({visibleItems.length} archivos)</option>
+                    {categoryLists.map((c) => (
+                      <option key={c.name} value={c.name}>
+                        Lista: {c.name} ({c.files.length})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <textarea
+                  value={synthQuestion}
+                  onChange={(e) => setSynthQuestion(e.target.value)}
+                  placeholder="¿Qué quieres analizar, cruzar o sintetizar?"
+                  className="studio-textarea-sm"
+                  rows={3}
+                />
+                <button
+                  type="submit"
+                  disabled={!synthQuestion.trim() || synthBusy}
+                  className="studio-btn studio-btn-primary"
+                >
+                  <IconAgent size={15} />
+                  {synthBusy ? 'Analizando bóveda…' : 'Generar síntesis colaborativa'}
+                </button>
+              </form>
+
+              {synthResult && (
+                <div className="studio-synth-output">
+                  <div className="studio-synth-output-head">
+                    <span className="studio-agent-tag">
+                      <IconAgent size={13} /> {synthResult.agentName}
+                    </span>
+                    <strong>{synthResult.title}</strong>
+                    {user && (
+                      <button
+                        type="button"
+                        className="studio-btn studio-btn-primary"
+                        onClick={async () => {
+                          await createMarkdownFile({
+                            title: synthResult.title,
+                            category: synthResult.category,
+                            markdownContent: synthResult.markdown,
+                            authorKind: 'agent',
+                            authorName: synthResult.agentName,
+                            reviewStatus: 'pending',
+                          });
+                          setSynthResult(null);
+                        }}
+                      >
+                        Guardar como .md en Bóveda
+                      </button>
+                    )}
+                  </div>
+                  <div className="studio-synth-preview">
+                    <MarkdownVaultView
+                      markdown={synthResult.markdown}
+                      allItems={visibleItems}
+                      onOpenItem={(it) => openVaultItem(it)}
+                    />
+                  </div>
+                </div>
+              )}
+            </section>
+
+            <section className="studio-panel-stack">
+              <div className="studio-panel-card">
+                <div className="studio-panel-card-head">
+                  <IconRelation size={17} />
+                  <h3>Archivos huérfanos ({vaultAnalytics.orphans.length})</h3>
+                </div>
+                {vaultAnalytics.orphans.length === 0 ? (
+                  <p className="studio-muted">
+                    Excelente: todos los archivos tienen al menos una conexión.
+                  </p>
+                ) : (
+                  <ul className="studio-compact-list">
+                    {vaultAnalytics.orphans.map((it) => (
+                      <li key={it.id}>
+                        <button
+                          type="button"
+                          className="studio-list-link"
+                          onClick={() => openVaultItem(it)}
+                        >
+                          <IconFileKind kind={getFileBadge(it).kind} size={14} />
+                          <span>{getFileDisplayName(it)}</span>
+                          <small>{it.category}</small>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+
+              <div className="studio-panel-card">
+                <div className="studio-panel-card-head">
+                  <IconAgent size={17} />
+                  <h3>Propuestas pendientes ({vaultAnalytics.pendingReviews.length})</h3>
+                </div>
+                {vaultAnalytics.pendingReviews.length === 0 ? (
+                  <p className="studio-muted">No hay propuestas pendientes de revisión humana.</p>
+                ) : (
+                  <ul className="studio-compact-list">
+                    {vaultAnalytics.pendingReviews.map((it) => (
+                      <li key={it.id} className="studio-review-row">
+                        <button
+                          type="button"
+                          className="studio-list-link"
+                          onClick={() => openVaultItem(it)}
+                        >
+                          <IconFileKind kind={getFileBadge(it).kind} size={14} />
+                          <span>{getFileDisplayName(it)}</span>
+                        </button>
+                        {user && (
+                          <button
+                            type="button"
+                            className="studio-btn studio-btn-secondary"
+                            onClick={() => mutateItem(it.id, { reviewStatus: 'verified' })}
+                          >
+                            Aprobar
+                          </button>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </section>
+          </div>
+        </main>
       ) : (
-        <main className="obsidian-workspace">
+        <main className="studio-workspace">
           {/* ---------------------------------------------------------------
-              PANEL IZQUIERDO: CATEGORÍAS COMO LISTAS DE ARCHIVOS (TODOS LOS TIPOS)
+              SIDEBAR IZQUIERDO: CATEGORÍAS COMO LISTAS DE ARCHIVOS
           --------------------------------------------------------------- */}
-          <aside className="obsidian-sidebar" aria-label="Explorador de listas de archivos">
-            <div className="obsidian-sidebar-head">
-              <span className="obsidian-pane-title">📁 Listas por Categoría</span>
+          <aside className="studio-sidebar" aria-label="Explorador de listas por categoría">
+            <div className="studio-sidebar-head">
+              <span className="studio-pane-eyebrow">Listas de Archivos</span>
               {user && (
                 <button
                   type="button"
-                  className="keep-icon-btn-sm"
+                  className="studio-mini-action"
                   onClick={() => setNewCategoryModalOpen(true)}
-                  title="Nueva categoría / lista"
+                  title="Nueva lista / categoría"
                 >
-                  + 📁
+                  + Lista
                 </button>
               )}
             </div>
 
-            <div className="obsidian-type-filter-bar" role="group" aria-label="Filtrar por tipo de archivo">
+            <div className="studio-filter-pills" role="group" aria-label="Filtrar por tipo">
               {[
                 { id: 'all', label: 'Todos' },
                 { id: 'markdown', label: '.md' },
                 { id: 'media', label: 'Media' },
                 { id: 'link', label: '.url' },
-                { id: 'relation', label: '🕸️ Rel.' },
+                { id: 'relation', label: 'Relaciones' },
+                { id: 'agent', label: 'IA' },
               ].map((t) => (
                 <button
                   key={t.id}
                   type="button"
-                  className={`obsidian-filter-chip ${fileKindFilter === t.id ? 'active' : ''}`}
+                  className={`studio-filter-pill ${fileKindFilter === t.id ? 'active' : ''}`}
                   onClick={() => setFileKindFilter(t.id)}
                 >
                   {t.label}
@@ -891,10 +1189,10 @@ function ObsidianVaultBoard() {
               ))}
             </div>
 
-            <div className="obsidian-tree-scroll">
-              {loading && <p className="obsidian-muted-msg">Cargando bóveda…</p>}
+            <div className="studio-tree-scroll">
+              {loading && <p className="studio-muted-pad">Cargando bóveda…</p>}
               {!loading && categoryLists.length === 0 && (
-                <p className="obsidian-muted-msg">No hay archivos que coincidan.</p>
+                <p className="studio-muted-pad">No hay archivos que coincidan.</p>
               )}
 
               {categoryLists.map((cat) => {
@@ -902,7 +1200,7 @@ function ObsidianVaultBoard() {
                 return (
                   <section
                     key={cat.name}
-                    className="obsidian-folder-group"
+                    className="studio-folder"
                     style={{ '--cat-accent': cat.accent }}
                     onDragOver={(e) => e.preventDefault()}
                     onDrop={(e) => {
@@ -917,10 +1215,10 @@ function ObsidianVaultBoard() {
                       }
                     }}
                   >
-                    <div className="obsidian-folder-row">
+                    <div className="studio-folder-header">
                       <button
                         type="button"
-                        className="obsidian-folder-toggle"
+                        className="studio-folder-btn"
                         onClick={() =>
                           setCollapsedCats((prev) => ({
                             ...prev,
@@ -928,18 +1226,16 @@ function ObsidianVaultBoard() {
                           }))
                         }
                       >
-                        <span className="obsidian-chevron">
-                          {isCollapsed ? '▸' : '▾'}
-                        </span>
-                        <span>{cat.icon}</span>
-                        <span className="obsidian-folder-name">{cat.name}</span>
-                        <span className="obsidian-folder-count">{cat.files.length}</span>
+                        <span className="studio-chevron">{isCollapsed ? '▸' : '▾'}</span>
+                        <span className="studio-cat-swatch" />
+                        <span className="studio-folder-title">{cat.name}</span>
+                        <span className="studio-folder-count">{cat.files.length}</span>
                       </button>
 
-                      <div className="obsidian-folder-actions">
+                      <div className="studio-folder-tools">
                         <button
                           type="button"
-                          className="keep-icon-btn-sm"
+                          className="studio-ghost-icon"
                           onClick={() => {
                             setNewNoteForm((f) => ({ ...f, category: cat.name }));
                             setNewNoteModalOpen(true);
@@ -950,7 +1246,7 @@ function ObsidianVaultBoard() {
                         </button>
                         <button
                           type="button"
-                          className="keep-icon-btn-sm"
+                          className="studio-ghost-icon"
                           onClick={() =>
                             setShareTarget({
                               kind: 'category',
@@ -960,18 +1256,21 @@ function ObsidianVaultBoard() {
                               sharedWith: cat.sharedWith,
                             })
                           }
-                          title={`Compartir lista ${cat.name}`}
+                          title={`Compartir ${cat.name}`}
                         >
-                          📤
+                          <IconShare size={13} />
                         </button>
                       </div>
                     </div>
 
                     {!isCollapsed && (
-                      <ul className="obsidian-file-list">
+                      <ul className="studio-file-list">
                         {cat.files.map(({ item: it, isCrossRef }) => {
                           const badge = getFileBadge(it);
+                          const ext = getFileExtension(it);
                           const isActive = it.id === activeItemId;
+                          const isAgent =
+                            it.authorKind === 'agent' || it.authorKind === 'hybrid';
                           return (
                             <li key={`${cat.name}-${it.id}`}>
                               <button
@@ -979,21 +1278,22 @@ function ObsidianVaultBoard() {
                                 draggable={Boolean(user)}
                                 onDragStart={() => setDragItemId(it.id)}
                                 onClick={() => openVaultItem(it)}
-                                className={`obsidian-file-row ${isActive ? 'is-active' : ''}`}
+                                className={`studio-file-item ${isActive ? 'is-active' : ''}`}
                                 title={getFileDisplayName(it)}
                               >
-                                <span className="obsidian-file-icon">{badge.icon}</span>
-                                <span className="obsidian-file-name">
-                                  {getFileDisplayName(it)}
+                                <span className="studio-file-icon">
+                                  <IconFileKind kind={badge.kind} size={14} />
                                 </span>
-                                {isCrossRef && (
-                                  <span className="obsidian-file-tag" title="Referencia cruzada">
-                                    ↗
+                                <span className="studio-file-label">{it.title}</span>
+                                <span className="studio-ext-tag">{ext}</span>
+                                {isAgent && (
+                                  <span className="studio-ia-mini" title="Asistido por Agente IA">
+                                    IA
                                   </span>
                                 )}
-                                {it.pinned && (
-                                  <span className="obsidian-file-tag" title="Fijado">
-                                    ★
+                                {isCrossRef && (
+                                  <span className="studio-xref-mini" title="Referencia cruzada">
+                                    ↗
                                   </span>
                                 )}
                               </button>
@@ -1009,15 +1309,20 @@ function ObsidianVaultBoard() {
           </aside>
 
           {/* ---------------------------------------------------------------
-              PANEL CENTRAL: LECTOR / EDITOR MARKDOWN + VISOR MULTIMEDIA
+              PANEL CENTRAL: LECTOR / EDITOR EDITORIAL + VISOR MULTIMEDIA
           --------------------------------------------------------------- */}
-          <section className="obsidian-editor-pane" aria-label="Visor y editor de archivo">
+          <section className="studio-editor-pane" aria-label="Documento activo">
             {!activeItem ? (
-              <div className="obsidian-empty-pane">
-                <p>Selecciona un archivo de las listas de la izquierda o crea un nuevo <code>.md</code>.</p>
+              <div className="studio-empty-state">
+                <IconVault size={32} />
+                <h3>Selecciona un archivo de tus listas</h3>
+                <p>
+                  Cada elemento es un archivo <code>.md</code>, multimedia o relación sobre el
+                  que tú y tus agentes podéis trabajar juntos.
+                </p>
                 <button
                   type="button"
-                  className="keep-btn keep-btn-primary"
+                  className="studio-btn studio-btn-primary"
                   onClick={() => setNewNoteModalOpen(true)}
                 >
                   + Crear primer archivo .md
@@ -1025,32 +1330,58 @@ function ObsidianVaultBoard() {
               </div>
             ) : (
               <>
-                <div className="obsidian-doc-toolbar">
-                  <div className="obsidian-doc-breadcrumb">
-                    <span className="obsidian-crumb-cat">
-                      {getCategoryIcon(activeItem.category)} {activeItem.category}
+                <div className="studio-doc-bar">
+                  <div className="studio-doc-meta">
+                    <span className="studio-doc-cat">{activeItem.category}</span>
+                    <span className="studio-doc-sep">/</span>
+                    <span className="studio-doc-name">
+                      <IconFileKind kind={activeBadge?.kind} size={15} />
+                      {getFileDisplayName(activeItem)}
                     </span>
-                    <span aria-hidden="true">/</span>
-                    <span className="obsidian-crumb-file">
-                      {activeBadge?.icon} {getFileDisplayName(activeItem)}
+
+                    <span
+                      className={`studio-author-pill is-${activeItem.authorKind || 'human'}`}
+                      title="Autoría del elemento"
+                    >
+                      {activeItem.authorKind === 'agent' ? (
+                        <>
+                          <IconAgent size={12} /> {activeItem.authorName || 'Agente IA'}
+                        </>
+                      ) : activeItem.authorKind === 'hybrid' ? (
+                        <>
+                          <IconAgent size={12} /> Colaborativo
+                        </>
+                      ) : (
+                        <>
+                          <IconHuman size={12} /> Humano
+                        </>
+                      )}
                     </span>
-                    {activeItem.kind === 'relation' && (
-                      <span className="obsidian-relation-pill">Relación-Elemento</span>
+
+                    {activeItem.reviewStatus === 'pending' && user && (
+                      <button
+                        type="button"
+                        className="studio-approve-pill"
+                        onClick={() => mutateItem(activeItem.id, { reviewStatus: 'verified' })}
+                      >
+                        ✓ Aprobar propuesta IA
+                      </button>
                     )}
-                    {dirty && <span className="obsidian-dirty-dot">● Sin guardar</span>}
+
+                    {dirty && <span className="studio-dirty-pill">Sin guardar</span>}
                   </div>
 
-                  <div className="obsidian-doc-actions">
-                    <div className="obsidian-segmented" role="group" aria-label="Modo de vista">
+                  <div className="studio-doc-controls">
+                    <div className="studio-segmented" role="group" aria-label="Modo de documento">
                       {[
-                        { id: 'read', label: '👁️ Lectura' },
-                        { id: 'split', label: '◫ Dividido' },
-                        { id: 'edit', label: '✏️ Editar' },
+                        { id: 'read', label: 'Lectura' },
+                        { id: 'split', label: 'Dividido' },
+                        { id: 'edit', label: 'Editar' },
                       ].map((m) => (
                         <button
                           key={m.id}
                           type="button"
-                          className={`obsidian-seg-btn ${editorMode === m.id ? 'active' : ''}`}
+                          className={`studio-seg-btn ${editorMode === m.id ? 'active' : ''}`}
                           onClick={() => setEditorMode(m.id)}
                         >
                           {m.label}
@@ -1061,41 +1392,28 @@ function ObsidianVaultBoard() {
                     {user && dirty && (
                       <button
                         type="button"
-                        className="keep-btn keep-btn-primary"
+                        className="studio-btn studio-btn-primary"
                         onClick={handleSaveActiveDraft}
                         disabled={savingDraft}
                       >
-                        {savingDraft ? 'Guardando…' : '💾 Guardar'}
+                        {savingDraft ? 'Guardando…' : 'Guardar'}
                       </button>
                     )}
 
                     {user && (
                       <button
                         type="button"
-                        className={`keep-icon-btn ${activeItem.pinned ? 'is-active' : ''}`}
+                        className={`studio-icon-btn ${activeItem.pinned ? 'is-pinned' : ''}`}
                         onClick={() => mutateItem(activeItem.id, { pinned: !activeItem.pinned })}
                         title={activeItem.pinned ? 'Quitar fijado' : 'Fijar archivo'}
                       >
-                        ★
-                      </button>
-                    )}
-
-                    {user && (
-                      <button
-                        type="button"
-                        className="keep-icon-btn"
-                        onClick={() =>
-                          mutateItem(activeItem.id, { isPublic: !activeItem.isPublic })
-                        }
-                        title={activeItem.isPublic ? 'Público (clic para hacer privado)' : 'Privado (clic para hacer público)'}
-                      >
-                        {activeItem.isPublic ? '🌍' : '🔒'}
+                        <IconStar size={15} filled={Boolean(activeItem.pinned)} />
                       </button>
                     )}
 
                     <button
                       type="button"
-                      className="keep-icon-btn"
+                      className="studio-icon-btn"
                       onClick={() =>
                         setShareTarget({
                           kind: 'item',
@@ -1105,84 +1423,79 @@ function ObsidianVaultBoard() {
                       }
                       title="Compartir archivo"
                     >
-                      📤
+                      <IconShare size={15} />
                     </button>
 
                     {user && (
                       <button
                         type="button"
-                        className="keep-icon-btn is-danger"
+                        className="studio-icon-btn is-danger"
                         onClick={() => handleDeleteItem(activeItem)}
                         title="Eliminar archivo"
                       >
-                        ✕
+                        <IconTrash size={15} />
                       </button>
                     )}
                   </div>
                 </div>
 
-                {/* Barra de fichero adjunto o URL externa del archivo activo */}
-                <div className="obsidian-media-bar">
-                  {activeItem.url && (
-                    <a
-                      href={activeItem.url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="obsidian-media-chip"
-                    >
-                      {activeItem.favicon && (
-                        <img src={activeItem.favicon} alt="" width="16" height="16" />
-                      )}
-                      <span>{activeItem.domain || activeItem.url} ↗</span>
-                    </a>
-                  )}
-
-                  {activeItem.attachment?.url && (
-                    <a
-                      href={activeItem.attachment.url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="obsidian-media-chip"
-                    >
-                      <span>
-                        {AttachmentService.getAttachmentIcon(
-                          activeItem.attachment.contentType,
-                          activeItem.attachment.name
+                {/* Barra de URL o Fichero Adjunto */}
+                {(activeItem.url || activeItem.attachment?.url || user) && (
+                  <div className="studio-resource-strip">
+                    {activeItem.url && (
+                      <a
+                        href={activeItem.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="studio-resource-chip"
+                      >
+                        {activeItem.favicon && (
+                          <img src={activeItem.favicon} alt="" width="15" height="15" />
                         )}
-                      </span>
-                      <span>{activeItem.attachment.name}</span>
-                      <small>
-                        ({AttachmentService.formatFileSize(activeItem.attachment.size)}) ↗
-                      </small>
-                    </a>
-                  )}
+                        <span>{activeItem.domain || activeItem.url} ↗</span>
+                      </a>
+                    )}
 
-                  {user && (
-                    <label htmlFor="active-attach-input" className="obsidian-attach-btn">
-                      📎 {activeItem.attachment?.url ? 'Reemplazar fichero' : 'Adjuntar fichero'}
-                      <input
-                        ref={attachFileInputRef}
-                        id="active-attach-input"
-                        type="file"
-                        className="keep-sr-only"
-                        onChange={(e) => {
-                          const f = e.target.files?.[0];
-                          if (f) handleAttachToActiveItem(f);
-                          e.target.value = '';
-                        }}
-                      />
-                    </label>
-                  )}
-                </div>
+                    {activeItem.attachment?.url && (
+                      <a
+                        href={activeItem.attachment.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="studio-resource-chip"
+                      >
+                        <IconFileKind kind={activeBadge?.kind} size={14} />
+                        <span>{activeItem.attachment.name}</span>
+                        <small>{AttachmentService.formatFileSize(activeItem.attachment.size)} ↗</small>
+                      </a>
+                    )}
 
-                {/* Previsualización multimedia nativa si el elemento tiene imagen/vídeo/audio/pdf */}
+                    {user && (
+                      <label htmlFor="studio-attach-active" className="studio-attach-trigger">
+                        <IconUpload size={13} />
+                        {activeItem.attachment?.url ? 'Reemplazar fichero' : 'Adjuntar fichero'}
+                        <input
+                          ref={attachFileInputRef}
+                          id="studio-attach-active"
+                          type="file"
+                          className="keep-sr-only"
+                          onChange={(e) => {
+                            const f = e.target.files?.[0];
+                            if (f) handleAttachToActiveItem(f);
+                            e.target.value = '';
+                          }}
+                        />
+                      </label>
+                    )}
+                  </div>
+                )}
+
                 {activeItem.attachment?.url && (
-                  <div className="obsidian-media-stage">
+                  <div className="studio-media-stage">
                     {AttachmentService.isImageAttachment(activeItem.attachment) && (
                       <img
                         src={activeItem.attachment.url}
                         alt={activeItem.attachment.name}
-                        className="obsidian-stage-image"
+                        className="studio-stage-img"
                       />
                     )}
                     {(activeItem.attachment.contentType?.startsWith('video/') ||
@@ -1190,7 +1503,7 @@ function ObsidianVaultBoard() {
                       <video
                         src={activeItem.attachment.url}
                         controls
-                        className="obsidian-stage-video"
+                        className="studio-stage-video"
                       />
                     )}
                     {(activeItem.attachment.contentType?.startsWith('audio/') ||
@@ -1202,17 +1515,16 @@ function ObsidianVaultBoard() {
                       <iframe
                         src={activeItem.attachment.url}
                         title={activeItem.attachment.name}
-                        className="obsidian-stage-pdf"
+                        className="studio-stage-pdf"
                       />
                     )}
                   </div>
                 )}
 
-                {/* Cuerpo Edit / Read / Split */}
-                <div className={`obsidian-panes mode-${editorMode}`}>
+                <div className={`studio-panes mode-${editorMode}`}>
                   {(editorMode === 'edit' || editorMode === 'split') && (
-                    <div className="obsidian-edit-col">
-                      <div className="obsidian-edit-fields">
+                    <div className="studio-edit-pane">
+                      <div className="studio-edit-inputs">
                         <input
                           type="text"
                           value={draftTitle}
@@ -1221,8 +1533,8 @@ function ObsidianVaultBoard() {
                             setDraftTitle(e.target.value);
                             setDirty(true);
                           }}
-                          placeholder="Nombre del archivo (sin extensión)…"
-                          className="obsidian-title-input"
+                          placeholder="Título del archivo…"
+                          className="studio-title-input"
                         />
                         <input
                           type="url"
@@ -1232,12 +1544,12 @@ function ObsidianVaultBoard() {
                             setDraftUrl(e.target.value);
                             setDirty(true);
                           }}
-                          placeholder="URL asociada (opcional)…"
-                          className="obsidian-url-input"
+                          placeholder="URL externa opcional…"
+                          className="studio-url-input"
                         />
                       </div>
 
-                      <div className="obsidian-textarea-wrap">
+                      <div className="studio-textarea-box">
                         <textarea
                           ref={editorTextareaRef}
                           value={draftMarkdown}
@@ -1249,8 +1561,8 @@ function ObsidianVaultBoard() {
                               handleSaveActiveDraft();
                             }
                           }}
-                          placeholder="Escribe en Markdown. Usa [[Nombre]] para enlazar otro archivo o ![[archivo]] para incrustar multimedia…"
-                          className="obsidian-markdown-textarea"
+                          placeholder="Escribe en Markdown. Usa [[Archivo]] para enlazar o ![[Multimedia]] para incrustar…"
+                          className="studio-markdown-textarea"
                         />
 
                         {showWikiSuggest && wikiSuggestions.length > 0 && (
@@ -1267,7 +1579,7 @@ function ObsidianVaultBoard() {
                                     className="obsidian-wikisuggest-main"
                                     onClick={() => insertWikiSuggestion(cand, false)}
                                   >
-                                    <span>{b.icon}</span>
+                                    <IconFileKind kind={b.kind} size={14} />
                                     <span>{getFileDisplayName(cand)}</span>
                                     <small>{cand.category}</small>
                                   </button>
@@ -1291,19 +1603,21 @@ function ObsidianVaultBoard() {
                   )}
 
                   {(editorMode === 'read' || editorMode === 'split') && (
-                    <div className="obsidian-read-col">
-                      <MarkdownVaultView
-                        markdown={draftMarkdown}
-                        allItems={visibleItems}
-                        onOpenItem={(it) => openVaultItem(it)}
-                        onCreateMissingNote={(missingName) => {
-                          if (!user) return;
-                          createMarkdownFile({
-                            title: missingName,
-                            category: activeItem.category,
-                          });
-                        }}
-                      />
+                    <div className="studio-read-pane">
+                      <article className="studio-prose">
+                        <MarkdownVaultView
+                          markdown={draftMarkdown}
+                          allItems={visibleItems}
+                          onOpenItem={(it) => openVaultItem(it)}
+                          onCreateMissingNote={(missingName) => {
+                            if (!user) return;
+                            createMarkdownFile({
+                              title: missingName,
+                              category: activeItem.category,
+                            });
+                          }}
+                        />
+                      </article>
                     </div>
                   )}
                 </div>
@@ -1312,30 +1626,48 @@ function ObsidianVaultBoard() {
           </section>
 
           {/* ---------------------------------------------------------------
-              PANEL DERECHO: CONEXIONES (SALIENTES, BACKLINKS Y RELACIONES-ELEMENTO)
+              PANEL DERECHO: CONEXIONES + AGENTE IA COLABORADOR
           --------------------------------------------------------------- */}
-          <aside className="obsidian-inspector" aria-label="Inspector de conexiones y backlinks">
+          <aside className="studio-inspector" aria-label="Inspector de conexiones y agente">
+            <div className="studio-inspector-tabs" role="tablist">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={inspectorTab === 'connections'}
+                className={`studio-tab-btn ${inspectorTab === 'connections' ? 'active' : ''}`}
+                onClick={() => setInspectorTab('connections')}
+              >
+                <IconRelation size={14} /> Conexiones
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={inspectorTab === 'agent'}
+                className={`studio-tab-btn ${inspectorTab === 'agent' ? 'active' : ''}`}
+                onClick={() => setInspectorTab('agent')}
+              >
+                <IconAgent size={14} /> Agente IA
+              </button>
+            </div>
+
             {!activeItem ? (
-              <p className="obsidian-muted-msg">Sin archivo seleccionado.</p>
-            ) : (
-              <>
-                <div className="obsidian-inspector-section">
-                  <h3 className="obsidian-inspector-title">
-                    🕸️ Relaciones-Elemento ({activeConnections.relations.length})
+              <p className="studio-muted-pad">Selecciona un archivo para ver sus conexiones.</p>
+            ) : inspectorTab === 'connections' ? (
+              <div className="studio-inspector-body">
+                <section className="studio-insp-block">
+                  <h3 className="studio-pane-eyebrow">
+                    Relaciones-Elemento ({activeConnections.relations.length})
                   </h3>
-                  <p className="obsidian-inspector-hint">
-                    Crea un archivo <code>.md</code> que represente la relación entre este archivo y otro.
-                  </p>
                   {activeConnections.relations.length > 0 && (
-                    <ul className="obsidian-conn-list">
+                    <ul className="studio-conn-list">
                       {activeConnections.relations.map((rel) => (
                         <li key={rel.id}>
                           <button
                             type="button"
-                            className="obsidian-conn-btn"
+                            className="studio-conn-card"
                             onClick={() => openVaultItem(rel)}
                           >
-                            <span>🕸️</span>
+                            <IconRelation size={14} />
                             <span>{rel.title}</span>
                           </button>
                         </li>
@@ -1344,12 +1676,12 @@ function ObsidianVaultBoard() {
                   )}
 
                   {user && (
-                    <form onSubmit={handleCreateRelationElement} className="obsidian-rel-form">
+                    <form onSubmit={handleCreateRelationElement} className="studio-rel-form">
                       <select
                         value={relTargetId}
                         onChange={(e) => setRelTargetId(e.target.value)}
-                        className="keep-select-compact"
-                        aria-label="Archivo destino de la relación"
+                        className="studio-select"
+                        aria-label="Archivo destino"
                       >
                         <option value="">Conectar con archivo…</option>
                         {visibleItems
@@ -1364,93 +1696,198 @@ function ObsidianVaultBoard() {
                         type="text"
                         value={relLabel}
                         onChange={(e) => setRelLabel(e.target.value)}
-                        placeholder="Tipo (ej. demuestra, inspira, refuta)"
-                        className="keep-input-compact"
+                        placeholder="Etiqueta (ej: demuestra, refuta)"
+                        className="studio-input-sm"
                       />
                       <button
                         type="submit"
                         disabled={!relTargetId}
-                        className="keep-btn keep-btn-soft"
+                        className="studio-btn studio-btn-secondary"
                       >
                         + Crear Relación .md
                       </button>
                     </form>
                   )}
-                </div>
+                </section>
 
-                <div className="obsidian-inspector-section">
-                  <h3 className="obsidian-inspector-title">
-                    🔗 Enlaces salientes ({activeConnections.outgoing.length})
+                <section className="studio-insp-block">
+                  <h3 className="studio-pane-eyebrow">
+                    Enlaces salientes ({activeConnections.outgoing.length})
                   </h3>
                   {activeConnections.outgoing.length === 0 ? (
-                    <p className="obsidian-muted-msg">
-                      Usa <code>[[Nombre]]</code> en el Markdown para enlazar otros archivos.
+                    <p className="studio-muted">
+                      Usa <code>[[Nombre]]</code> en el Markdown para enlazar.
                     </p>
                   ) : (
-                    <ul className="obsidian-conn-list">
-                      {activeConnections.outgoing.map(({ item: target, via }) => {
-                        const b = getFileBadge(target);
-                        return (
-                          <li key={target.id}>
-                            <button
-                              type="button"
-                              className="obsidian-conn-btn"
-                              onClick={() => openVaultItem(target)}
-                            >
-                              <span>{b.icon}</span>
-                              <span>{getFileDisplayName(target)}</span>
-                              <small>{via}</small>
-                            </button>
-                          </li>
-                        );
-                      })}
+                    <ul className="studio-conn-list">
+                      {activeConnections.outgoing.map(({ item: target, via }) => (
+                        <li key={target.id}>
+                          <button
+                            type="button"
+                            className="studio-conn-card"
+                            onClick={() => openVaultItem(target)}
+                          >
+                            <IconFileKind kind={getFileBadge(target).kind} size={14} />
+                            <span className="studio-conn-name">{getFileDisplayName(target)}</span>
+                            <small className="studio-ext-tag">{via}</small>
+                          </button>
+                        </li>
+                      ))}
                     </ul>
                   )}
-                </div>
+                </section>
 
-                <div className="obsidian-inspector-section">
-                  <h3 className="obsidian-inspector-title">
-                    ↩️ Backlinks ({activeConnections.backlinks.length})
+                <section className="studio-insp-block">
+                  <h3 className="studio-pane-eyebrow">
+                    Backlinks ({activeConnections.backlinks.length})
                   </h3>
                   {activeConnections.backlinks.length === 0 ? (
-                    <p className="obsidian-muted-msg">Ningún otro archivo enlaza a este todavía.</p>
+                    <p className="studio-muted">Sin menciones entrantes todavía.</p>
                   ) : (
-                    <ul className="obsidian-conn-list">
-                      {activeConnections.backlinks.map(({ item: src, snippet }) => {
-                        const b = getFileBadge(src);
-                        return (
-                          <li key={src.id}>
-                            <button
-                              type="button"
-                              className="obsidian-conn-btn is-backlink"
-                              onClick={() => openVaultItem(src)}
-                            >
-                              <div className="obsidian-backlink-head">
-                                <span>{b.icon}</span>
-                                <strong>{getFileDisplayName(src)}</strong>
-                              </div>
-                              {snippet && <p className="obsidian-backlink-snippet">{snippet}</p>}
-                            </button>
-                          </li>
-                        );
-                      })}
+                    <ul className="studio-conn-list">
+                      {activeConnections.backlinks.map(({ item: src, snippet }) => (
+                        <li key={src.id}>
+                          <button
+                            type="button"
+                            className="studio-conn-card is-col"
+                            onClick={() => openVaultItem(src)}
+                          >
+                            <div className="studio-conn-head">
+                              <IconFileKind kind={getFileBadge(src).kind} size={14} />
+                              <strong>{getFileDisplayName(src)}</strong>
+                            </div>
+                            {snippet && <p className="studio-conn-snippet">{snippet}</p>}
+                          </button>
+                        </li>
+                      ))}
                     </ul>
                   )}
-                </div>
-              </>
+                </section>
+              </div>
+            ) : (
+              <div className="studio-inspector-body">
+                <section className="studio-insp-block">
+                  <h3 className="studio-pane-eyebrow">Copiloto de Conocimiento</h3>
+                  <p className="studio-muted">
+                    El agente analiza <strong>{getFileDisplayName(activeItem)}</strong> frente al
+                    resto de la bóveda para proponer conexiones y relaciones reificadas.
+                  </p>
+                  <button
+                    type="button"
+                    className="studio-btn studio-btn-primary"
+                    onClick={handleRunAgentItemAnalysis}
+                    disabled={agentBusy}
+                  >
+                    <IconAgent size={15} />
+                    {agentBusy ? 'Analizando…' : 'Analizar y sugerir conexiones'}
+                  </button>
+                </section>
+
+                {activeAgentReport && (
+                  <section className="studio-insp-block">
+                    <div className="studio-agent-box">
+                      <span className="studio-agent-tag">
+                        <IconAgent size={12} /> {activeAgentReport.agentName}
+                      </span>
+                      {activeAgentReport.summary && (
+                        <p className="studio-agent-summary">{activeAgentReport.summary}</p>
+                      )}
+                    </div>
+
+                    <h4 className="studio-pane-eyebrow">
+                      Conexiones sugeridas ({activeAgentReport.suggestions.length})
+                    </h4>
+                    {activeAgentReport.suggestions.length === 0 ? (
+                      <p className="studio-muted">
+                        No se detectaron nuevas conexiones pendientes para este archivo.
+                      </p>
+                    ) : (
+                      <ul className="studio-suggestion-list">
+                        {activeAgentReport.suggestions.map((sug) => {
+                          const target = itemsById[sug.targetId];
+                          if (!target) return null;
+                          return (
+                            <li key={sug.targetId} className="studio-suggestion-card">
+                              <div className="studio-suggestion-top">
+                                <strong>{sug.targetTitle}</strong>
+                                <span className="studio-rel-badge">{sug.relationLabel}</span>
+                              </div>
+                              <p className="studio-suggestion-reason">{sug.reason}</p>
+                              {user && (
+                                <div className="studio-suggestion-actions">
+                                  <button
+                                    type="button"
+                                    className="studio-mini-action"
+                                    onClick={async () => {
+                                      const nextMd = `${draftMarkdown.trimEnd()}\n- [[${target.title}]] *(${sug.relationLabel})*\n`;
+                                      setDraftMarkdown(nextMd);
+                                      await mutateItem(activeItem.id, {
+                                        markdownContent: nextMd,
+                                        relatedIds: Array.from(
+                                          new Set([...(activeItem.relatedIds || []), target.id])
+                                        ),
+                                        authorKind: 'hybrid',
+                                      });
+                                    }}
+                                  >
+                                    + Enlazar [[ ]]
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="studio-mini-action is-accent"
+                                    onClick={() =>
+                                      createRelationBetween({
+                                        source: activeItem,
+                                        target,
+                                        label: sug.relationLabel,
+                                        authorKind: 'agent',
+                                        authorName: activeAgentReport.agentName,
+                                        reviewStatus: 'pending',
+                                        reason: sug.reason,
+                                      })
+                                    }
+                                  >
+                                    + Relación .md
+                                  </button>
+                                </div>
+                              )}
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    )}
+                  </section>
+                )}
+
+                <section className="studio-insp-block">
+                  <button
+                    type="button"
+                    className="studio-btn studio-btn-secondary"
+                    onClick={() => {
+                      setSynthScope(activeItem.category);
+                      setSynthQuestion(
+                        `Analiza cómo encaja "${activeItem.title}" dentro de ${activeItem.category} y qué conexiones faltan.`
+                      );
+                      setViewMode('analysis');
+                    }}
+                  >
+                    Abrir en Mesa de Análisis IA ↗
+                  </button>
+                </section>
+              </div>
             )}
           </aside>
         </main>
       )}
 
       {/* =================================================================
-          MODAL: NUEVO ARCHIVO .MD
+          MODALES
       ================================================================= */}
       <LightDismissDialog
         open={newNoteModalOpen}
         onClose={() => setNewNoteModalOpen(false)}
         title="Nuevo archivo Markdown (.md)"
-        subtitle="Se añadirá a la lista de la categoría elegida"
+        subtitle="Se añadirá a la lista de la categoría seleccionada"
       >
         <form
           onSubmit={async (e) => {
@@ -1485,9 +1922,9 @@ function ObsidianVaultBoard() {
               value={newNoteForm.category}
               onChange={(e) => setNewNoteForm({ ...newNoteForm, category: e.target.value })}
               className="keep-input"
-              list="vault-cat-options"
+              list="studio-cat-options"
             />
-            <datalist id="vault-cat-options">
+            <datalist id="studio-cat-options">
               {categoryLists.map((c) => (
                 <option key={c.name} value={c.name} />
               ))}
@@ -1504,21 +1941,18 @@ function ObsidianVaultBoard() {
             />
           </div>
           <div className="share-actions-row">
-            <button type="submit" className="keep-btn keep-btn-primary">
+            <button type="submit" className="studio-btn studio-btn-primary">
               Crear archivo .md
             </button>
           </div>
         </form>
       </LightDismissDialog>
 
-      {/* =================================================================
-          MODAL: CREAR NUEVA CATEGORÍA
-      ================================================================= */}
       <LightDismissDialog
         open={newCategoryModalOpen}
         onClose={() => setNewCategoryModalOpen(false)}
         title="Nueva Lista / Categoría"
-        subtitle="Organiza tus archivos .md, imágenes, PDFs y vídeos"
+        subtitle="Organiza tus archivos .md, multimedia y relaciones"
       >
         <form
           onSubmit={async (e) => {
@@ -1534,7 +1968,7 @@ function ObsidianVaultBoard() {
             setNewCatForm({
               name: '',
               icon: '📁',
-              colorKey: 'emerald',
+              colorKey: 'indigo',
               note: '',
               isPublic: true,
             });
@@ -1549,22 +1983,12 @@ function ObsidianVaultBoard() {
               required
               value={newCatForm.name}
               onChange={(e) => setNewCatForm({ ...newCatForm, name: e.target.value })}
-              placeholder="Ej: Proyectos, Fuentes PDF, Ideas…"
+              placeholder="Ej: Investigación, Fuentes PDF, Agentes…"
               className="keep-input"
             />
           </div>
           <div className="share-section">
-            <label className="share-label">Icono</label>
-            <input
-              type="text"
-              value={newCatForm.icon}
-              onChange={(e) => setNewCatForm({ ...newCatForm, icon: e.target.value })}
-              className="keep-input"
-              maxLength={4}
-            />
-          </div>
-          <div className="share-section">
-            <label className="share-label">Color</label>
+            <label className="share-label">Color identificador</label>
             <div className="keep-color-dots">
               {KEEP_COLORS.map((c) => (
                 <button
@@ -1579,16 +2003,13 @@ function ObsidianVaultBoard() {
             </div>
           </div>
           <div className="share-actions-row">
-            <button type="submit" className="keep-btn keep-btn-primary">
+            <button type="submit" className="studio-btn studio-btn-primary">
               Crear lista
             </button>
           </div>
         </form>
       </LightDismissDialog>
 
-      {/* =================================================================
-          MODAL: COMPARTIR CATEGORÍA O ARCHIVO
-      ================================================================= */}
       <ShareModal
         open={Boolean(shareTarget)}
         onClose={() => setShareTarget(null)}
@@ -1612,7 +2033,7 @@ function ObsidianVaultBoard() {
 export default function App() {
   return (
     <AuthProvider>
-      <ObsidianVaultBoard />
+      <StudioVaultApp />
     </AuthProvider>
   );
 }

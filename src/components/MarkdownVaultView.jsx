@@ -5,6 +5,7 @@ import {
   getFileDisplayName,
 } from '../services/MarkdownVaultService';
 import AttachmentService from '../services/AttachmentService';
+import { IconFileKind, IconImage } from './VaultIcons';
 
 /**
  * Renderizador seguro de Markdown estilo Obsidian.md sin dangerouslySetInnerHTML.
@@ -40,12 +41,12 @@ export default function MarkdownVaultView({
               <figure key={key} className="obsidian-embed-figure">
                 <img src={att.url} alt={rawAlias || att.name} loading="lazy" />
                 <figcaption>
-                  <button
+                    <button
                     type="button"
                     className="obsidian-wikilink-inline"
                     onClick={() => onOpenItem && onOpenItem(targetItem)}
                   >
-                    🖼️ {rawAlias || getFileDisplayName(targetItem)}
+                    <IconImage size={14} /> {rawAlias || getFileDisplayName(targetItem)}
                   </button>
                 </figcaption>
               </figure>
@@ -79,7 +80,7 @@ export default function MarkdownVaultView({
               className="obsidian-wikilink"
               onClick={() => onOpenItem && onOpenItem(targetItem)}
             >
-              {badge.icon} {rawAlias || getFileDisplayName(targetItem)}
+              <IconFileKind kind={badge.kind} size={14} /> {rawAlias || getFileDisplayName(targetItem)}
             </button>
           );
         }
@@ -109,7 +110,9 @@ export default function MarkdownVaultView({
               onClick={() => onOpenItem && onOpenItem(resolved)}
               title={`Abrir ${getFileDisplayName(resolved)} (${resolved.category})`}
             >
-              <span className="obsidian-wl-icon">{badge.icon}</span>
+              <span className="obsidian-wl-icon">
+                <IconFileKind kind={badge.kind} size={14} />
+              </span>
               {label}
             </button>
           );

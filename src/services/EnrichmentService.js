@@ -221,6 +221,9 @@ export function normalizeDiscoveryDoc(raw) {
     sourceId: raw.sourceId || '',
     targetId: raw.targetId || '',
     relationLabel: raw.relationLabel || '',
+    authorKind: raw.authorKind || 'human', // 'human' | 'agent' | 'hybrid'
+    authorName: raw.authorName || '',
+    reviewStatus: raw.reviewStatus || 'verified', // 'verified' | 'pending' | 'draft'
     isPublic: raw.isPublic !== undefined ? Boolean(raw.isPublic) : true,
     sharedWith: Array.isArray(raw.sharedWith) ? raw.sharedWith : [],
     ownerUid: raw.ownerUid || '',
