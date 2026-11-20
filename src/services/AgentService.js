@@ -1,6 +1,6 @@
-import { extractWikiLinks, getFileDisplayName } from './MarkdownVaultService';
+import { extractWikiLinks, getFileDisplayName } from './MarkdownVaultService.js';
 
-const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY || '';
+const GEMINI_API_KEY = import.meta.env?.VITE_GEMINI_API_KEY || '';
 const GEMINI_MODEL = 'gemini-2.5-flash';
 
 async function callGeminiJson(prompt) {

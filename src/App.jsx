@@ -36,6 +36,24 @@ import {
   runStreamingAgentTask,
 } from './services/AgentStreamAdapter';
 import { seedPlatformVault } from './services/PlatformSeedService';
+import {
+  compileLmWikiIndex,
+  extractCodeSymbols,
+  injectWikiLinkIntoMarkdown,
+  parseImportedLocalFile,
+} from './services/LmWikiEngine';
+import {
+  DEFAULT_LM_CONFIG,
+  appendWikiLogEntry,
+  getStorageTelemetry,
+  loadLmConfig,
+  loadLocalVaultSnapshot,
+  loadSavedSyntheses,
+  loadWikiLog,
+  saveLmConfig,
+  saveLocalVaultSnapshot,
+  saveSyntheses,
+} from './services/LocalFirstWikiStore';
 import { buildLocalPlatformSnapshot } from './data/platform_vault';
 import { KEEP_COLORS, getColorConfig } from './data/keep_palette';
 import SidebarExplorer from './components/SidebarExplorer';
@@ -66,26 +84,53 @@ function useVaultData(onFirstLoad) {
   const [isLocalOnly, setIsLocalOnly] = useState(false);
   const initializedRef = useRef(false);
 
+  // Hidratación instantánea Local-First desde IndexedDB antes de esperar a la red
+  useEffect(() => {
+    let active = true;
+    loadLocalVaultSnapshot().then((cached) => {
+      if (!active || !cached?.items?.length || initializedRef.current) return;
+      initializedRef.current = true;
+      setItems(cached.items);
+      if (cached.categoriesDocs && Object.keys(cached.categoriesDocs).length > 0) {
+        setCategoriesDocs(cached.categoriesDocs);
+      }
+      setLoading(false);
+      onFirstLoad?.(cached.items);
+    });
+    return () => {
+      active = false;
+    };
+  }, [onFirstLoad]);
+
+  // Espejo continuo a IndexedDB para garantizar persistencia offline local-first
+  useEffect(() => {
+    if (items.length === 0) return;
+    void saveLocalVaultSnapshot({ items, categoriesDocs });
+  }, [items, categoriesDocs]);
+
   useEffect(() => {
     const q = query(collection(db, 'discoveries'), orderBy('createdAt', 'desc'));
     const unsubItems = onSnapshot(
       q,
       (snapshot) => {
         if (snapshot.docs.length === 0) {
-          const fallback = buildLocalPlatformSnapshot(
-            EnrichmentService.normalizeDiscoveryDoc,
-            getColorConfig
-          );
-          setItems(fallback.items);
-          setCategoriesDocs((prev) =>
-            Object.keys(prev).length > 0 ? prev : fallback.categoriesMap
-          );
+          setItems((prev) => {
+            if (prev.length > 0) return prev;
+            const fallback = buildLocalPlatformSnapshot(
+              EnrichmentService.normalizeDiscoveryDoc,
+              getColorConfig
+            );
+            setCategoriesDocs((catPrev) =>
+              Object.keys(catPrev).length > 0 ? catPrev : fallback.categoriesMap
+            );
+            if (!initializedRef.current) {
+              initializedRef.current = true;
+              onFirstLoad?.(fallback.items);
+            }
+            return fallback.items;
+          });
           setIsLocalOnly(true);
           setLoading(false);
-          if (!initializedRef.current) {
-            initializedRef.current = true;
-            onFirstLoad?.(fallback.items);
-          }
           return;
         }
 
@@ -101,7 +146,23 @@ function useVaultData(onFirstLoad) {
         }
       },
       (err) => {
-        console.warn('[Vault] Error escuchando discoveries:', err);
+        console.warn('[Vault] Error escuchando discoveries (continuando en modo Local-First):', err);
+        setItems((prev) => {
+          if (prev.length > 0) return prev;
+          const fallback = buildLocalPlatformSnapshot(
+            EnrichmentService.normalizeDiscoveryDoc,
+            getColorConfig
+          );
+          setCategoriesDocs((catPrev) =>
+            Object.keys(catPrev).length > 0 ? catPrev : fallback.categoriesMap
+          );
+          if (!initializedRef.current) {
+            initializedRef.current = true;
+            onFirstLoad?.(fallback.items);
+          }
+          return fallback.items;
+        });
+        setIsLocalOnly(true);
         setLoading(false);
       }
     );
@@ -141,8 +202,21 @@ function CommandCenterApp() {
     return 'dark';
   });
 
-  const [viewMode, setViewMode] = useState('stream'); // 'stream' | 'studio' | 'graph'
+  const [viewMode, setViewMode] = useState(() => {
+    if (typeof window === 'undefined') return 'wiki';
+    const param = new URLSearchParams(window.location.search).get('view');
+    if (['stream', 'studio', 'graph', 'wiki'].includes(param)) return param;
+    return 'wiki';
+  }); // 'stream' | 'studio' | 'graph' | 'wiki'
   const [studioSubMode, setStudioSubMode] = useState('split'); // 'preview' | 'split' | 'edit'
+  const [lmConfig, setLmConfig] = useState(DEFAULT_LM_CONFIG);
+  const [savedSyntheses, setSavedSyntheses] = useState([]);
+  const [wikiLog, setWikiLog] = useState([]);
+  const [storageTelemetry, setStorageTelemetry] = useState(null);
+  const [isOnline, setIsOnline] = useState(() =>
+    typeof navigator === 'undefined' ? true : navigator.onLine
+  );
+  const [indexEpoch, setIndexEpoch] = useState(0);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const [commandOpen, setCommandOpen] = useState(false);
@@ -358,6 +432,43 @@ function CommandCenterApp() {
       orphans,
     };
   }, [visibleItems]);
+
+  // Motor LM Wiki: índice semántico BM25 + conceptos auto-compilados + auto-enlaces + código
+  const wikiIndex = useMemo(
+    () =>
+      compileLmWikiIndex(visibleItems, {
+        autoLinkThreshold: lmConfig.autoLinkThreshold,
+        epoch: indexEpoch,
+      }),
+    [visibleItems, lmConfig.autoLinkThreshold, indexEpoch]
+  );
+
+  // Hidratación Local-First del estado LM Wiki (IndexedDB) + estado online/offline
+  useEffect(() => {
+    let active = true;
+    Promise.all([
+      loadLmConfig(),
+      loadSavedSyntheses(),
+      loadWikiLog(),
+      getStorageTelemetry(),
+    ]).then(([cfg, syns, wlog, telem]) => {
+      if (!active) return;
+      setLmConfig(cfg);
+      setSavedSyntheses(syns);
+      setWikiLog(wlog);
+      setStorageTelemetry(telem);
+    });
+
+    const onOnline = () => setIsOnline(true);
+    const onOffline = () => setIsOnline(false);
+    window.addEventListener('online', onOnline);
+    window.addEventListener('offline', onOffline);
+    return () => {
+      active = false;
+      window.removeEventListener('online', onOnline);
+      window.removeEventListener('offline', onOffline);
+    };
+  }, []);
 
   // Selección explícita de archivo (actualiza editor sin setState-in-effect)
   const handleSelectFile = useCallback(
@@ -677,9 +788,9 @@ function CommandCenterApp() {
     );
   }, [activeAgentId, activeItem, handleDispatchPrompt]);
 
-  // Subida y edición de archivos
+  // Subida y edición de archivos (Local-First: persiste en IndexedDB aunque no haya sesión remota)
   const handleSaveActiveDraft = useCallback(async () => {
-    if (!activeItem || !user) return;
+    if (!activeItem) return;
     setSaving(true);
     try {
       await mutateItem(activeItem.id, {
@@ -689,12 +800,190 @@ function CommandCenterApp() {
       });
       setDirty(false);
       appendLog(
-        createLogEntry('done', 'VAULT', `Archivo guardado: ${draftTitle.trim() || activeItem.title}`)
+        createLogEntry(
+          'done',
+          'VAULT',
+          `Archivo guardado (${user ? 'Local + Firestore' : 'Local-First'}): ${draftTitle.trim() || activeItem.title}`
+        )
       );
+      const nextLog = await appendWikiLogEntry({
+        action: 'EDIT',
+        summary: `Editado y reindexado «${draftTitle.trim() || activeItem.title}».`,
+      });
+      setWikiLog(nextLog);
     } finally {
       setSaving(false);
     }
   }, [activeItem, appendLog, draftMarkdown, draftTitle, mutateItem, user]);
+
+  // Handlers del Motor LM Wiki Autoorganizado & Local-First
+  const handleSaveLmConfig = useCallback(
+    async (nextCfg) => {
+      const saved = await saveLmConfig(nextCfg);
+      setLmConfig(saved);
+      const nextLog = await appendWikiLogEntry({
+        action: 'ENGINE',
+        summary: `Motor LM configurado: ${saved.provider} (umbral auto-enlace ${Math.round(saved.autoLinkThreshold * 100)}%).`,
+      });
+      setWikiLog(nextLog);
+      appendLog(createLogEntry('info', 'LMWIKI', `Motor LM actualizado → ${saved.provider}`));
+    },
+    [appendLog]
+  );
+
+  const handleSaveSynthesis = useCallback(
+    async (article) => {
+      setSavedSyntheses((prev) => {
+        const next = [article, ...prev.filter((a) => a.id !== article.id)].slice(0, 80);
+        void saveSyntheses(next);
+        return next;
+      });
+      const nextLog = await appendWikiLogEntry({
+        action: 'SYNTH',
+        summary: `Artículo compilado: «${article.title}» (${article.engine}).`,
+      });
+      setWikiLog(nextLog);
+      const telem = await getStorageTelemetry();
+      setStorageTelemetry(telem);
+      appendLog(createLogEntry('done', 'LMWIKI', `Síntesis compilada: ${article.title}`));
+    },
+    [appendLog]
+  );
+
+  const handlePromoteArticleToVault = useCallback(
+    async (article) => {
+      if (!article) return;
+      await createMarkdownFile({
+        title: article.title,
+        category: '00 · LM Wiki · Síntesis',
+        markdownContent: article.markdown,
+        authorKind: 'hybrid',
+        authorName: article.engine || 'LM Wiki',
+        reviewStatus: 'verified',
+        openInStudio: true,
+      });
+      const nextLog = await appendWikiLogEntry({
+        action: 'PROMOTE',
+        summary: `Artículo «${article.title}» promovido a bóveda permanente (.md).`,
+      });
+      setWikiLog(nextLog);
+      appendLog(createLogEntry('done', 'LMWIKI', `Promovido a bóveda: ${article.title}`));
+    },
+    [appendLog, createMarkdownFile]
+  );
+
+  const handleApplyAutoLink = useCallback(
+    async (suggestion) => {
+      if (!suggestion?.source || !suggestion?.target) return;
+      const src = itemsById[suggestion.source.id] || suggestion.source;
+      const dst = itemsById[suggestion.target.id] || suggestion.target;
+      const currentMd = buildInitialMarkdown(src, itemsById);
+      const nextMd = injectWikiLinkIntoMarkdown(
+        currentMd,
+        dst.title,
+        suggestion.suggestedLabel || 'conecta con'
+      );
+      const nextRelated = Array.from(new Set([...(src.relatedIds || []), dst.id]));
+      await mutateItem(src.id, {
+        markdownContent: nextMd,
+        relatedIds: nextRelated,
+      });
+      if (activeItem?.id === src.id) {
+        setDraftMarkdown(nextMd);
+      }
+      const nextLog = await appendWikiLogEntry({
+        action: 'AUTOLINK',
+        summary: `Enlazado [[${src.title}]] → [[${dst.title}]] (${suggestion.confidencePct}% · ${suggestion.sharedTerms.join(', ')}).`,
+      });
+      setWikiLog(nextLog);
+      appendLog(
+        createLogEntry(
+          'done',
+          'LMWIKI',
+          `Auto-enlace inyectado: ${src.title} → [[${dst.title}]]`
+        )
+      );
+    },
+    [activeItem?.id, appendLog, itemsById, mutateItem]
+  );
+
+  const handleApplyBatchAutoLinks = useCallback(
+    async (suggestions = []) => {
+      let count = 0;
+      for (const sug of suggestions) {
+        await handleApplyAutoLink(sug);
+        count += 1;
+      }
+      return count;
+    },
+    [handleApplyAutoLink]
+  );
+
+  const handleImportLocalFiles = useCallback(
+    async (files = []) => {
+      let importedCount = 0;
+      for (const file of files) {
+        const parsed = await parseImportedLocalFile(file, visibleItems);
+        await createMarkdownFile({
+          title: parsed.title,
+          category: parsed.category,
+          markdownContent: parsed.markdownContent,
+          authorKind: 'human',
+          openInStudio: false,
+        });
+        importedCount += 1;
+      }
+      if (importedCount > 0) {
+        const nextLog = await appendWikiLogEntry({
+          action: 'IMPORT',
+          summary: `Importados ${importedCount} archivo(s) locales con indexación y auto-enlazado.`,
+        });
+        setWikiLog(nextLog);
+        const telem = await getStorageTelemetry();
+        setStorageTelemetry(telem);
+        appendLog(
+          createLogEntry('done', 'LMWIKI', `${importedCount} archivo(s) locales importados a la bóveda.`)
+        );
+      }
+      return importedCount;
+    },
+    [appendLog, createMarkdownFile, visibleItems]
+  );
+
+  const handleQuickCaptureCode = useCallback(
+    async ({ title, lang, code }) => {
+      const symbols = extractCodeSymbols(code);
+      const md = [
+        `# ${title}`,
+        '',
+        `> **Fragmento de código indexado** · Lenguaje: \`${lang}\``,
+        '',
+        ...(symbols.length > 0
+          ? ['## Símbolos detectados', symbols.map((s) => `- \`${s}\``).join('\n'), '']
+          : []),
+        '## Implementación',
+        `\`\`\`${lang}`,
+        code.trim(),
+        '```',
+        '',
+      ].join('\n');
+
+      await createMarkdownFile({
+        title,
+        category: '01 · Arquitectura & Núcleo',
+        markdownContent: md,
+        authorKind: 'human',
+        openInStudio: false,
+      });
+      const nextLog = await appendWikiLogEntry({
+        action: 'CODE',
+        summary: `Fragmento «${title}» (${lang}) capturado e indexado (${symbols.length} símbolos).`,
+      });
+      setWikiLog(nextLog);
+      appendLog(createLogEntry('done', 'LMWIKI', `Código indexado: ${title} (${lang})`));
+    },
+    [appendLog, createMarkdownFile]
+  );
 
   const handleUploadNewFile = useCallback(
     async (file, targetCategory = 'Multimedia & PDF') => {
@@ -1029,6 +1318,9 @@ function CommandCenterApp() {
       } else if (key === '3') {
         e.preventDefault();
         setViewMode('graph');
+      } else if (key === '4') {
+        e.preventDefault();
+        setViewMode('wiki');
       } else if (key === 'a' && activeAgent?.status === 'awaiting_approval') {
         e.preventDefault();
         handleApproveAgent(activeAgent.id);
@@ -1096,7 +1388,7 @@ function CommandCenterApp() {
               <IconVault size={16} />
             </span>
             <span className="cc-brand-name">love.deft.work</span>
-            <span className="cc-env-badge">COMMAND v3</span>
+            <span className="cc-env-badge">LM WIKI · LOCAL-FIRST</span>
           </div>
         </div>
 
@@ -1230,6 +1522,20 @@ function CommandCenterApp() {
             allItems={visibleItems}
             activeItem={activeItem}
             vaultAnalytics={vaultAnalytics}
+            wikiIndex={wikiIndex}
+            savedSyntheses={savedSyntheses}
+            wikiLog={wikiLog}
+            lmConfig={lmConfig}
+            storageTelemetry={storageTelemetry}
+            isOnline={isOnline}
+            onSaveLmConfig={handleSaveLmConfig}
+            onSaveSynthesis={handleSaveSynthesis}
+            onPromoteArticleToVault={handlePromoteArticleToVault}
+            onApplyAutoLink={handleApplyAutoLink}
+            onApplyBatchAutoLinks={handleApplyBatchAutoLinks}
+            onImportLocalFiles={handleImportLocalFiles}
+            onQuickCaptureCode={handleQuickCaptureCode}
+            onRecompileIndex={() => setIndexEpoch((n) => n + 1)}
             draftTitle={draftTitle}
             onDraftTitleChange={(v) => {
               setDraftTitle(v);

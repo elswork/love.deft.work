@@ -30,3 +30,4 @@ Antes de escribir el código final, sigue estrictamente este orden:
 2. **Propuesta de Layout y Flujo:** Describe brevemente la nueva distribución espacial (ej. panel lateral de contexto/agentes, lienzo central de trabajo colaborativo, inspector derecho de artefactos/logs) y cómo fluye la interacción humano-agente.
 3. **Implementación Completa:** Entrega el código reescrito, limpio, comentado y listo para producción. No uses placeholders como `// aquí va la lógica`; implementa toda la estructura visual, estados interactivos, datos de ejemplo realistas (mock data) para probar la interfaz de inmediato y las conexiones listas para enchufar a mi backend.
 
+busca conversaciones en nuestra bitacora donde hablasemos de la unesco y mandamelas en un borrador a mi correo

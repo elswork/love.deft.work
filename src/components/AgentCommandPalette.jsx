@@ -148,6 +148,14 @@ export default function AgentCommandPalette({
         run: () => onSwitchView?.('graph'),
       },
       {
+        id: 'cmd-view-wiki',
+        group: 'Navegación',
+        label: 'Ir a LM Wiki (Índice, Auto-Enlaces y Código Local-First)',
+        shortcut: '4',
+        kind: 'agent',
+        run: () => onSwitchView?.('wiki'),
+      },
+      {
         id: 'cmd-theme',
         group: 'Preferencias',
         label: 'Alternar tema Oscuro / Claro',

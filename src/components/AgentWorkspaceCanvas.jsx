@@ -1,5 +1,6 @@
-import React, { Suspense, lazy, useState } from 'react';
+import React, { Suspense, lazy, useRef, useState } from 'react';
 import MarkdownVaultView from './MarkdownVaultView';
+import LmWikiView from './LmWikiView';
 import AttachmentService from '../services/AttachmentService';
 import {
   getFileBadge,
@@ -22,15 +23,19 @@ import {
   IconTerminal,
   IconTrash,
   IconUpload,
+  IconWiki,
 } from './VaultIcons';
 
 const ConnectionsGraph = lazy(() => import('./ConnectionsGraph'));
+
+const WORKSPACE_TABS = ['stream', 'studio', 'graph', 'wiki'];
 
 /**
  * Lienzo Central del Command Center:
  * 1) Stream Colaborativo & Cola HITL (streaming CLS = 0, Approve/Reject/Pause/Redirect).
  * 2) Estudio Obsidian (.md editor/preview + multimedia + [[WikiLinks]]).
  * 3) Grafo interactivo (carga diferida con React.lazy).
+ * 4) LM Wiki Autoorganizado & Local-First (índice BM25, auto-enlaces, código y síntesis).
  */
 export default function AgentWorkspaceCanvas({
   viewMode,
@@ -47,6 +52,20 @@ export default function AgentWorkspaceCanvas({
   allItems = [],
   activeItem,
   vaultAnalytics,
+  wikiIndex,
+  savedSyntheses = [],
+  wikiLog = [],
+  lmConfig,
+  storageTelemetry,
+  isOnline = true,
+  onSaveLmConfig,
+  onSaveSynthesis,
+  onPromoteArticleToVault,
+  onApplyAutoLink,
+  onApplyBatchAutoLinks,
+  onImportLocalFiles,
+  onQuickCaptureCode,
+  onRecompileIndex,
   draftTitle,
   onDraftTitleChange,
   draftMarkdown,
@@ -74,6 +93,7 @@ export default function AgentWorkspaceCanvas({
 }) {
   const [promptInput, setPromptInput] = useState('');
   const [dispatchScope, setDispatchScope] = useState('ACTIVE_ITEM');
+  const mainTabRefs = useRef({});
 
   const pendingHitlCount = agents.filter((a) => a.status === 'awaiting_approval').length;
   const activeAgentState = activeAgent
@@ -81,6 +101,21 @@ export default function AgentWorkspaceCanvas({
     : AGENT_STATES.completed;
 
   const activeBadge = activeItem ? getFileBadge(activeItem) : null;
+
+  const handleMainTabKeyDown = (e, idx) => {
+    let nextIdx = null;
+    if (e.key === 'ArrowRight') nextIdx = (idx + 1) % WORKSPACE_TABS.length;
+    else if (e.key === 'ArrowLeft') nextIdx = (idx - 1 + WORKSPACE_TABS.length) % WORKSPACE_TABS.length;
+    else if (e.key === 'Home') nextIdx = 0;
+    else if (e.key === 'End') nextIdx = WORKSPACE_TABS.length - 1;
+    if (nextIdx === null) return;
+    e.preventDefault();
+    const nextMode = WORKSPACE_TABS[nextIdx];
+    onSetViewMode(nextMode);
+    const btn = mainTabRefs.current[nextMode];
+    btn?.focus();
+    btn?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  };
 
   const handleSubmitPrompt = (e) => {
     e.preventDefault();
@@ -102,13 +137,25 @@ export default function AgentWorkspaceCanvas({
     <main className="cc-canvas" aria-label="Espacio de trabajo colaborativo">
       {/* Cabecera de pestañas principales + métricas compactas */}
       <div className="cc-canvas-topbar">
-        <div className="cc-view-tabs" role="tablist" aria-label="Modos del espacio de trabajo">
+        <div
+          className="cc-view-tabs"
+          role="tablist"
+          aria-label="Modos del espacio de trabajo"
+          {...{ focusgroup: 'tablist nomemory' }}
+        >
           <button
+            ref={(el) => {
+              mainTabRefs.current.stream = el;
+            }}
+            id="cc-tab-stream"
             type="button"
             role="tab"
             aria-selected={viewMode === 'stream'}
+            tabIndex={viewMode === 'stream' ? 0 : -1}
             className={`cc-view-tab ${viewMode === 'stream' ? 'is-active' : ''}`}
             onClick={() => onSetViewMode('stream')}
+            onKeyDown={(e) => handleMainTabKeyDown(e, 0)}
+            {...(viewMode === 'stream' ? { focusgroupstart: '' } : {})}
           >
             <IconTerminal size={14} />
             <span>Stream &amp; HITL</span>
@@ -119,11 +166,18 @@ export default function AgentWorkspaceCanvas({
           </button>
 
           <button
+            ref={(el) => {
+              mainTabRefs.current.studio = el;
+            }}
+            id="cc-tab-studio"
             type="button"
             role="tab"
             aria-selected={viewMode === 'studio'}
+            tabIndex={viewMode === 'studio' ? 0 : -1}
             className={`cc-view-tab ${viewMode === 'studio' ? 'is-active' : ''}`}
             onClick={() => onSetViewMode('studio')}
+            onKeyDown={(e) => handleMainTabKeyDown(e, 1)}
+            {...(viewMode === 'studio' ? { focusgroupstart: '' } : {})}
           >
             <IconMarkdown size={14} />
             <span>Estudio .md &amp; Media</span>
@@ -131,15 +185,44 @@ export default function AgentWorkspaceCanvas({
           </button>
 
           <button
+            ref={(el) => {
+              mainTabRefs.current.graph = el;
+            }}
+            id="cc-tab-graph"
             type="button"
             role="tab"
             aria-selected={viewMode === 'graph'}
+            tabIndex={viewMode === 'graph' ? 0 : -1}
             className={`cc-view-tab ${viewMode === 'graph' ? 'is-active' : ''}`}
             onClick={() => onSetViewMode('graph')}
+            onKeyDown={(e) => handleMainTabKeyDown(e, 2)}
+            {...(viewMode === 'graph' ? { focusgroupstart: '' } : {})}
           >
             <IconGraph size={14} />
             <span>Grafo</span>
             <kbd className="cc-kbd-hint">3</kbd>
+          </button>
+
+          <button
+            ref={(el) => {
+              mainTabRefs.current.wiki = el;
+            }}
+            id="cc-tab-wiki"
+            type="button"
+            role="tab"
+            aria-selected={viewMode === 'wiki'}
+            tabIndex={viewMode === 'wiki' ? 0 : -1}
+            className={`cc-view-tab ${viewMode === 'wiki' ? 'is-active' : ''}`}
+            onClick={() => onSetViewMode('wiki')}
+            onKeyDown={(e) => handleMainTabKeyDown(e, 3)}
+            {...(viewMode === 'wiki' ? { focusgroupstart: '' } : {})}
+          >
+            <IconWiki size={14} />
+            <span>LM Wiki</span>
+            {(wikiIndex?.suggestedLinks?.length || 0) > 0 && (
+              <span className="cc-tab-pill tone-cyan">{wikiIndex.suggestedLinks.length}</span>
+            )}
+            <kbd className="cc-kbd-hint">4</kbd>
           </button>
         </div>
 
@@ -169,7 +252,7 @@ export default function AgentWorkspaceCanvas({
       {/* MODO 1: STREAM COLABORATIVO & CONTROL HUMAN-IN-THE-LOOP      */}
       {/* ============================================================ */}
       {viewMode === 'stream' && (
-        <div className="cc-stream-shell">
+        <div className="cc-stream-shell" role="tabpanel" aria-labelledby="cc-tab-stream">
           {/* Selector horizontal rápido de agentes activos */}
           <div className="cc-agent-pills-bar" role="group" aria-label="Seleccionar agente activo">
             {agents.map((ag) => {
@@ -422,7 +505,7 @@ export default function AgentWorkspaceCanvas({
       {/* MODO 2: ESTUDIO OBSIDIAN (.MD + MULTIMEDIA + WIKILINKS)      */}
       {/* ============================================================ */}
       {viewMode === 'studio' && (
-        <div className="cc-studio-shell">
+        <div className="cc-studio-shell" role="tabpanel" aria-labelledby="cc-tab-studio">
           {!activeItem ? (
             <div className="cc-empty-studio">
               <h3>Selecciona un archivo de la bóveda</h3>
@@ -668,7 +751,7 @@ export default function AgentWorkspaceCanvas({
       {/* MODO 3: GRAFO INTERACTIVO (LAZY LOADED)                      */}
       {/* ============================================================ */}
       {viewMode === 'graph' && (
-        <div className="cc-graph-shell">
+        <div className="cc-graph-shell" role="tabpanel" aria-labelledby="cc-tab-graph">
           <Suspense
             fallback={
               <div className="cc-graph-loading">
@@ -686,6 +769,36 @@ export default function AgentWorkspaceCanvas({
               }}
             />
           </Suspense>
+        </div>
+      )}
+
+      {/* ============================================================ */}
+      {/* MODO 4: LM WIKI AUTOORGANIZADO & LOCAL-FIRST                 */}
+      {/* ============================================================ */}
+      {viewMode === 'wiki' && (
+        <div className="cc-wiki-shell" role="tabpanel" aria-labelledby="cc-tab-wiki">
+          <LmWikiView
+            wikiIndex={wikiIndex}
+            allItems={allItems}
+            savedSyntheses={savedSyntheses}
+            wikiLog={wikiLog}
+            lmConfig={lmConfig}
+            storageTelemetry={storageTelemetry}
+            isOnline={isOnline}
+            onSaveLmConfig={onSaveLmConfig}
+            onSaveSynthesis={onSaveSynthesis}
+            onPromoteArticleToVault={onPromoteArticleToVault}
+            onApplyAutoLink={onApplyAutoLink}
+            onApplyBatchAutoLinks={onApplyBatchAutoLinks}
+            onImportLocalFiles={onImportLocalFiles}
+            onQuickCaptureCode={onQuickCaptureCode}
+            onOpenItem={(it) => {
+              onSelectItem(it);
+              onSetViewMode('studio');
+            }}
+            onCreateMissingNote={onCreateMissingNote}
+            onRecompileIndex={onRecompileIndex}
+          />
         </div>
       )}
     </main>
